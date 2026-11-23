@@ -1,0 +1,72 @@
+<Window
+    x:Class="WindowPilot.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="窗口轻控 · WindowPilot">
+    <Grid x:Name="Root" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="24,18,24,18" MaxWidth="760" Spacing="16" HorizontalAlignment="Stretch">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <FontIcon Glyph="&#xE91B;" FontSize="26" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                    <TextBlock Grid.Column="1" Text="窗口轻控" Style="{ThemeResource TitleTextBlockStyle}"/>
+                </Grid>
+                <StackPanel Spacing="8">
+                    <TextBlock Text="绑定窗口" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <ComboBox x:Name="TargetBox" AutomationProperties.AutomationId="TargetBox" AutomationProperties.Name="选择要绑定的窗口" PlaceholderText="选择一个正在运行的窗口" DisplayMemberPath="Display" HorizontalAlignment="Stretch" SelectionChanged="SelectTarget" MaxDropDownHeight="340"/>
+                        <Button Grid.Column="1" x:Name="BindAction" Content="刷新" Click="RefreshOrRelease"/>
+                    </Grid>
+                    <TextBlock x:Name="BindingInfo" Text="选定后，控件和快捷键将固定作用于该窗口。" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                </StackPanel>
+                <UserControl x:Name="TargetActions" IsEnabled="False" HorizontalContentAlignment="Stretch">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Button x:Name="VisibilityButton" AutomationProperties.AutomationId="VisibilityButton" Content="隐藏窗口" Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Stretch" Click="ToggleHidden"/>
+                        <CheckBox Grid.Column="1" x:Name="TopmostBox" AutomationProperties.AutomationId="TopmostBox" Content="始终置顶" Click="ChangeTopmost"/>
+                    </Grid>
+                    <Border BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4"/>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="不透明度" VerticalAlignment="Center" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                        <TextBlock Grid.Column="1" x:Name="OpacityValue" VerticalAlignment="Center" Text="100%"/>
+                    </Grid>
+                    <Grid ColumnSpacing="14">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Slider x:Name="OpacitySlider" AutomationProperties.Name="窗口不透明度" Minimum="0" Maximum="100" Value="100" StepFrequency="1" SmallChange="1" LargeChange="10" ValueChanged="ChangeOpacity"/>
+                        <Button x:Name="ZeroButton" Grid.Column="1" Content="一键全透明" Click="ToggleZero"/>
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="22">
+                        <CheckBox x:Name="InvertBox" AutomationProperties.AutomationId="InvertBox" Content="反色" Click="ChangeFilters"/>
+                        <CheckBox x:Name="GrayBox" AutomationProperties.AutomationId="GrayBox" Content="灰度" Click="ChangeFilters"/>
+                    </StackPanel>
+                </StackPanel>
+                </UserControl>
+                <Border BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+                <StackPanel Spacing="8">
+                    <TextBlock Text="隐藏 / 显示快捷键" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <CheckBox x:Name="CtrlKey" MinWidth="0" Content="Ctrl" IsChecked="True"/>
+                        <CheckBox x:Name="AltKey" MinWidth="0" Content="Alt"/>
+                        <CheckBox x:Name="ShiftKey" MinWidth="0" Content="Shift" IsChecked="True"/>
+                        <CheckBox x:Name="WinKey" MinWidth="0" Content="Win"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <ComboBox x:Name="ShortcutKey" AutomationProperties.Name="快捷键主键" MinWidth="96"/>
+                        <Button Content="保存快捷键" Click="SaveHotkey"/>
+                    </StackPanel>
+                    <TextBlock x:Name="ShortcutInfo" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}"/>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+        <Border Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Padding="24,10">
+            <TextBlock x:Name="StatusText" Text="请选择窗口。" TextWrapping="Wrap" IsTextSelectionEnabled="True" AutomationProperties.LiveSetting="Polite"/>
+        </Border>
+    </Grid>
+</Window>

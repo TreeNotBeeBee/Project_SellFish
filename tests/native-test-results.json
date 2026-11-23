@@ -1,0 +1,56 @@
+{
+  "success": true,
+  "utc": "2026-11-23T13:00:25.6184457+00:00",
+  "os": "Microsoft Windows NT 10.0.19045.0",
+  "sdkTarget": "net11.0-windows",
+  "assertions": [
+    "enumeration identifies external target",
+    "invalid identity rejected",
+    "one target bound",
+    "topmost does not activate target",
+    "topmost can be removed",
+    "zero opacity is exact byte zero without hiding",
+    "opacity percentage maps to native alpha",
+    "effect source can use exact byte one",
+    "rounded zero percent still updates byte one to zero",
+    "full opacity is exact byte 255",
+    "both disposable targets have real running taskbar buttons",
+    "hide removes actual target window",
+    "hidden bound target remains the same selectable target",
+    "hidden target running taskbar button absent while other target remains",
+    "show restores the same window and normal placement",
+    "same running taskbar button returns",
+    "minimized state survives hide/show",
+    "maximized state survives hide/show",
+    "rebinding restores old visibility, original layered style and original topmost",
+    "rebinding controls only the new window",
+    "release removes binding",
+    "original alpha byte one can become exact zero",
+    "release preserves exact original alpha, color key and flags",
+    "original alpha 254 can become exact full opacity",
+    "release restores original alpha byte 254",
+    "restart journal safely restores a stranded hidden window",
+    "missing GUID marker rejects recycled/replaced window identity",
+    "stale bound identity cannot mutate target",
+    "unreadable layered surface rejects opacity changes",
+    "unsupported layered surface remains unmodified",
+    "hung target produces bounded hide timeout",
+    "hung foreign UI cannot indefinitely block hide",
+    "hung target remains recoverable after it resumes"
+  ],
+  "skipped": [],
+  "taskbar": {
+    "beforeHide": [
+      "WindowPilot.NativeTests - 1 \u4E2A\u8FD0\u884C\u7A97\u53E3 [id=]",
+      "WindowPilot.NativeTests - 1 \u4E2A\u8FD0\u884C\u7A97\u53E3 [id=]"
+    ],
+    "whileHidden": [
+      "WindowPilot.NativeTests - 1 \u4E2A\u8FD0\u884C\u7A97\u53E3 [id=]"
+    ],
+    "afterShow": [
+      "WindowPilot.NativeTests - 1 \u4E2A\u8FD0\u884C\u7A97\u53E3 [id=]",
+      "WindowPilot.NativeTests - 1 \u4E2A\u8FD0\u884C\u7A97\u53E3 [id=]"
+    ]
+  },
+  "error": null
+}
