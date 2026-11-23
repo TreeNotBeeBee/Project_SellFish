@@ -11,6 +11,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="NativeTests.cs" />
+    <Compile Include="../NativeEffectOverlay.cs" Link="NativeEffectOverlay.cs" />
+    <Compile Include="../BackdropOpacityLayer.cs" Link="BackdropOpacityLayer.cs" />
     <Compile Include="..\WindowService.cs" Link="WindowService.cs" />
   </ItemGroup>
 </Project>

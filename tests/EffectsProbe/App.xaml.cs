@@ -86,17 +86,37 @@ public partial class App : Application
             uint combinedPixel = Dominant(effects.ReadRenderedPixelsForDiagnostics()!);
             uint combinedScreen = Convert.ToUInt32((string)result["combinedScreenCalibrated"], 16);
             result["combinedCorrect"] = (combinedPixel >> 24) == 128 && ((combinedPixel >> 16) & 255) == ((combinedPixel >> 8) & 255) && ((combinedPixel >> 8) & 255) == (combinedPixel & 255) && Math.Abs((int)((combinedScreen >> 16) & 255) - (int)((combinedPixel >> 16) & 255)) <= 2 && Math.Abs((int)((combinedScreen >> 8) & 255) - (int)((combinedPixel >> 8) & 255)) <= 2 && Math.Abs((int)(combinedScreen & 255) - (int)(combinedPixel & 255)) <= 2;
+            // Simulate the client owning its alpha again while the color filter remains
+            // enabled. The backdrop must mask the red original under the 50% gray overlay.
+            using var stableBackdrop = new BackdropOpacityLayer(_target);
+            SetLayeredWindowAttributes(_target, 0, 255, 2);
+            for (int frame = 0; frame < 15; frame++)
+            {
+                SetLayeredWindowAttributes(_target, 0, 255, 2);
+                stableBackdrop.Track(1, false);
+                await Task.Delay(33);
+            }
+            string stableColor = Calibrate(ScreenPixel(400, 320));
+            result["stableFilteredPixel"] = stableColor;
+            uint stableRgb = Convert.ToUInt32(stableColor, 16);
+            result["stableFilteredCorrect"] = Math.Abs((int)(stableRgb >> 16) - (int)(combinedScreen >> 16)) <= 2
+                && Math.Abs((int)((stableRgb >> 8) & 255) - (int)((combinedScreen >> 8) & 255)) <= 2
+                && Math.Abs((int)(stableRgb & 255) - (int)(combinedScreen & 255)) <= 2;
+            result["stableFilteredInputCorrect"] = WindowFromPoint(new EffectNative.Point(400, 320)) == _target;
             _occluder = EffectNative.CreateWindowEx(0, wc.ClassName, "WindowPilot occlusion probe", 0x90000000, 350, 270, 160, 130, 0, 0, wc.Instance, 0);
             SetBackground(_occluder, 0x00FF0000);
             EffectNative.ShowWindow(_occluder, 5); EffectNative.ShowWindow(_occluder, 5);
             EffectNative.SetWindowPos(_occluder, 0, 350, 270, 160, 130, 0x40);
             await Task.Delay(700);
+            stableBackdrop.Track(1, false);
+            await Task.Delay(120);
             result["occludedScreenCenter"] = ScreenPixel(400, 320);
             result["occludedScreenCalibrated"] = Calibrate((string)result["occludedScreenCenter"]);
             result["sourceWhileOccluded"] = Histogram(await EffectSession.CaptureSampleAsync(_target));
             result["zOrder"] = new { Target = _target.ToInt64(), Overlay = effects.OverlayHandle.ToInt64(), Occluder = _occluder.ToInt64(), BeforeTarget = EffectNative.GetWindow(_target, 3).ToInt64(), BeforeOverlay = EffectNative.GetWindow(effects.OverlayHandle, 3).ToInt64() };
             result["occlusionCorrect"] = Calibrate(ScreenPixel(400, 320)) == "0000FF";
             EffectNative.SetWindowPos(_target, -1, 0, 0, 0, 0, 0x13);
+            stableBackdrop.Track(1, true);
             effects.Update(_target, true, true, 50, false, true);
             EffectNative.SetWindowPos(_occluder, -1, 350, 270, 160, 130, 0x50);
             await Task.Delay(300);
@@ -104,6 +124,11 @@ public partial class App : Application
             EffectNative.SetWindowPos(_target, -2, 0, 0, 0, 0, 0x13);
             effects.Update(_target, true, true, 50, false, false);
             EffectNative.DestroyWindow(_occluder); _occluder = 0;
+            stableBackdrop.Track(1, false);
+            await Task.Delay(180);
+            result["stableRestoredAfterOcclusion"] = Calibrate(ScreenPixel(400,320)) == stableColor;
+            stableBackdrop.Hide();
+            SetLayeredWindowAttributes(_target, 0, 1, 2);
             int oldPixelLength = effects.ReadRenderedPixelsForDiagnostics()!.Length;
             EffectNative.SetWindowPos(_target, 0, 160, 140, 560, 360, 0x14);
             await Task.Delay(650);
@@ -128,7 +153,15 @@ public partial class App : Application
             await Task.Delay(200);
             result["zeroOverlay"] = !EffectNative.IsWindowVisible(effects.OverlayHandle);
             effects.Stop();
-            result["success"] = !result.ContainsKey("rendererFailure") && Convert.ToInt64(result["invertFrames"]) > 0 && (bool)result["lowAlphaSourceCorrect"] && (bool)result["invertCorrect"] && (bool)result["combinedCorrect"] && (bool)result["occlusionCorrect"] && (bool)result["topmostOcclusionCorrect"] && (bool)result["inputPassThroughCorrect"] && (bool)result["resizeCorrect"] && (bool)result["staticRepaintImmediate"] && (bool)result["minimizedOverlay"] && (bool)result["restoredOverlay"] && (bool)result["hiddenOverlay"] && (bool)result["zeroOverlay"];
+            string[] checks = [
+                "lowAlphaSourceCorrect", "invertCorrect", "combinedCorrect", "stableFilteredCorrect",
+                "stableFilteredInputCorrect", "stableRestoredAfterOcclusion", "occlusionCorrect",
+                "topmostOcclusionCorrect", "inputPassThroughCorrect", "resizeCorrect",
+                "staticRepaintImmediate", "minimizedOverlay", "restoredOverlay", "hiddenOverlay",
+                "reshownOverlay", "zeroOverlay"
+            ];
+            result["success"] = !result.ContainsKey("rendererFailure") && Convert.ToInt64(result["invertFrames"]) > 0
+                && checks.All(check => (bool)result[check]);
         }
         catch (Exception ex) { result["exception"] = ex.ToString(); result["success"] = false; }
         finally

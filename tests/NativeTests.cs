@@ -12,6 +12,7 @@ internal static class NativeTests
     private static readonly Dictionary<string, string[]> Taskbar = [];
     private static readonly Native.WndProc WindowProc = Procedure;
     private static int _resetOnHover, _clicks;
+    private static uint _paintColor = uint.MaxValue;
 
     [STAThread]
     private static int Main(string[] args)
@@ -216,27 +217,65 @@ internal static class NativeTests
             Native.SetWindowPos(lower, -1, 180, 180, 480, 240, 0x10);
             service.SetTopmost(true);
             Wait(() => Native.WindowFromPoint(point) == upper);
+            Native.SendMessage(upper, 0x8043, 0x0000FF, 0); // red
+            Native.SendMessage(lower, 0x8043, 0xFF0000, 0); // blue
             Native.SetCursorPos(x - 5, y);
-            service.SetOpacity(38);
+            service.SetOpacity(0); PumpDesktop(90);
+            uint background = Pixel(x + 42, y + 28);
+            service.SetOpacity(100); PumpDesktop(90);
+            uint foregroundColor = Pixel(x + 42, y + 28);
+            Check(!NearColor(foregroundColor, background), "disposable red target and blue background have distinct desktop pixels");
+            service.SetOpacity(38); PumpDesktop(90);
+            uint wantedPixel = Pixel(x + 42, y + 28);
+            Check(!NearColor(wantedPixel, foregroundColor) && !NearColor(wantedPixel, background),
+                "native 38% reference pixel lies between the target and background");
+
+            // Reference the old controller's exact two states with desktop pixels rather than alpha flags.
             Native.SendMessage(upper, 0x8041, 1, 0);
             Native.SetCursorPos(x, y);
+            Wait(() => Alpha(upper) == 255); PumpDesktop(65);
+            Check(NearColor(Pixel(x + 42, y + 28), foregroundColor), "v1.1 hover reset exposes the full-brightness target on screen");
+            Native.SetLayeredWindowAttributes(upper, 0, 97, 2); PumpDesktop(65);
+            Check(NearColor(Pixel(x + 42, y + 28), wantedPixel), "v1.1 periodic rewrite visibly switches the desktop pixel back");
+            Native.SetCursorPos(x + 1, y);
             Wait(() => Alpha(upper) == 255);
             var savedWrite = File.GetLastWriteTimeUtc(journal);
-            service.EnforceAppearance();
-            Check(Alpha(upper) == 97, "real mouse entry resetting alpha is repaired to the requested 38%");
-            service.EnforceAppearance();
-            Check(File.GetLastWriteTimeUtc(journal) == savedWrite, "hover repair and stable refresh perform no journal writes");
-
+            service.EnforceAppearance(); PumpDesktop(120);
+            Check(service.UsesBackdrop && Native.WindowFromPoint(point) == upper && Alpha(upper) == 255,
+                "independent composition leaves the continuously resetting target opaque and hittable");
+            for (int frame = 0; frame < 24; frame++)
+            {
+                Native.SetCursorPos(x + 2 + frame % 8, y);
+                Native.SendMessage(upper, 0x200, 0, 0);
+                service.EnforceAppearance(); PumpDesktop(22);
+                uint pixel = Pixel(x + 42, y + 28);
+                if (!NearColor(pixel, wantedPixel) || Alpha(upper) != 255)
+                    throw new Exception($"frame {frame}: screen {pixel:X6}, expected {wantedPixel:X6}, native alpha {Alpha(upper)}");
+            }
+            Check(true, "24 consecutive real desktop samples stay at 38% through repeated mouse resets with no native alpha rewrite");
+            Check(File.GetLastWriteTimeUtc(journal) == savedWrite, "continuous hover and stable refresh perform no journal writes");
+            Native.SendMessage(lower, 0x8043, 0x00FF00, 0); // green
+            PumpDesktop(80); service.EnforceAppearance(); PumpDesktop(100);
+            Check(!NearColor(Pixel(x + 42, y + 28), wantedPixel), "changes behind an opaque target appear in its partial-opacity presentation");
+            Native.SendMessage(lower, 0x8043, 0xFF0000, 0);
             Native.SendMessage(upper, 0x8041, 2, 0);
             Native.SetCursorPos(x + 1, y);
             Wait(() => (Native.GetWindowLongPtr(upper, -20).ToInt64() & 0x80000) == 0);
-            service.EnforceAppearance();
-            Check(Alpha(upper) == 97, "real mouse movement removing layered style is repaired");
+            service.EnforceAppearance(); PumpDesktop(80);
+            Check(NearColor(Pixel(x + 42, y + 28), wantedPixel), "target can remove its layered style while desktop opacity stays at 38%");
             Native.SendMessage(upper, 0x8041, 0, 0);
 
+            service.SetOpacity(0); PumpDesktop(80);
+            Check(NearColor(Pixel(x + 42, y + 28), background) && Native.WindowFromPoint(point) == lower, "compatibility zero shows the background and passes input");
+            service.SetOpacity(38); PumpDesktop(80);
+            Check(Native.WindowFromPoint(point) == upper && NearColor(Pixel(x + 42, y + 28), wantedPixel), "raising compatibility opacity restores input and pixels");
+            service.SetHidden(true); PumpDesktop(350);
+            Check(NearColor(Pixel(x + 42, y + 28), background), "hiding removes the compatibility layer along with the target");
+            service.SetHidden(false); PumpDesktop(350); service.EnforceAppearance(); PumpDesktop(120);
+            Check(NearColor(Pixel(x + 42, y + 28), wantedPixel), "show restores the compatibility layer at its requested opacity");
             service.SetClickThrough(true);
             Wait(() => Native.WindowFromPoint(point) == lower);
-            Check(Alpha(upper) == 97, "click-through preserves visible source opacity");
+            Check(service.Opacity == 38, "click-through preserves requested presentation opacity");
             Native.SetCursorPos(x, y);
             if (Native.WindowFromPoint(point) != lower) throw new InvalidOperationException("Test click target changed.");
             var input = new[] { Native.MouseInput(2), Native.MouseInput(4) };
@@ -251,7 +290,7 @@ internal static class NativeTests
             Check((Native.GetWindowLongPtr(upper, -20) & 0x20) != 0, "lost click-through flag is repaired");
             service.SetClickThrough(false);
             Wait(() => Native.WindowFromPoint(point) == upper);
-            Check(Alpha(upper) == 97, "turning click-through off restores hit testing and preserves opacity");
+            Check(service.Opacity == 38, "turning click-through off restores hit testing and preserves opacity");
         }
         finally
         {
@@ -261,6 +300,29 @@ internal static class NativeTests
             Native.SetCursorPos(saved.X, saved.Y);
         }
     }
+    private static void PumpDesktop(int milliseconds)
+    {
+        var watch = Stopwatch.StartNew();
+        do
+        {
+            while (Native.PeekMessage(out var message, 0, 0, 0, 1))
+            { Native.TranslateMessage(ref message); Native.DispatchMessage(ref message); }
+            Thread.Sleep(2);
+        } while (watch.ElapsedMilliseconds < milliseconds);
+    }
+    private static uint Pixel(int x, int y)
+    {
+        var dc = Native.GetDC(0);
+        try { return Native.GetPixel(dc, x, y); }
+        finally { Native.ReleaseDC(0, dc); }
+    }
+    private static bool NearColor(uint a, uint b)
+    {
+        for (int shift = 0; shift <= 16; shift += 8)
+            if (Math.Abs((int)((a >> shift) & 255) - (int)((b >> shift) & 255)) > 3) return false;
+        return true;
+    }
+
     private static void MakePerPixelSurface(nint hwnd)
     {
         var screen = Native.GetDC(0);
@@ -340,12 +402,23 @@ internal static class NativeTests
     {
         if (message == 0x8041) { _resetOnHover = (int)wParam; return 0; }
         if (message == 0x8042) return _clicks;
+        if (message == 0x8043)
+        {
+            _paintColor = (uint)wParam;
+            Native.RedrawWindow(hwnd, 0, 0, 0x105);
+            return 0;
+        }
+        if (message == 0x14 && _paintColor != uint.MaxValue)
+        {
+            var brush = Native.CreateSolidBrush(_paintColor);
+            Native.GetClientRect(hwnd, out var rect); Native.FillRect(wParam, ref rect, brush); Native.DeleteObject(brush);
+            return 1;
+        }
         if (message == 0x201) _clicks++;
         if (message == 0x200 && _resetOnHover != 0)
         {
             if (_resetOnHover == 1) Native.SetLayeredWindowAttributes(hwnd, 0, 255, 2);
             else Native.SetWindowLongPtr(hwnd, -20, Native.GetWindowLongPtr(hwnd, -20) & ~(nint)0x80000);
-            _resetOnHover = 0;
         }
         if (message == 0x8040) { Thread.Sleep(4000); return 0; }
         if (message == 0x113) { Native.DestroyWindow(hwnd); return 0; }
@@ -391,6 +464,12 @@ internal static class NativeTests
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern ushort RegisterClassEx(ref WindowClass value);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint CreateWindowEx(uint ex, string klass, string title, uint style, int x, int y, int width, int height, nint parent, nint menu, nint instance, nint param);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint DefWindowProc(nint hwnd, uint message, nint wParam, nint lParam);
+        [DllImport("user32.dll")] internal static extern bool PeekMessage(out Message message, nint window, uint first, uint last, uint remove);
+        [DllImport("user32.dll")] internal static extern bool GetClientRect(nint window, out Rect rect);
+        [DllImport("user32.dll")] internal static extern int FillRect(nint dc, ref Rect rect, nint brush);
+        [DllImport("user32.dll")] internal static extern bool RedrawWindow(nint hwnd, nint area, nint region, uint flags);
+        [DllImport("gdi32.dll")] internal static extern nint CreateSolidBrush(uint color);
+        [DllImport("gdi32.dll")] internal static extern uint GetPixel(nint dc, int x, int y);
         [DllImport("user32.dll")] internal static extern int GetMessage(out Message message, nint hwnd, uint min, uint max);
         [DllImport("user32.dll")] internal static extern bool TranslateMessage(ref Message message);
         [DllImport("user32.dll")] internal static extern nint DispatchMessage(ref Message message);

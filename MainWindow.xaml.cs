@@ -32,7 +32,13 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _panel = new CompactWindow(this, Root, ThemeBox, StatusText);
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "FishBasket.ico"));
+        _panel = new CompactWindow(this, Root, ThemeBox, StatusText,
+        [
+            new("hide", HiddenBox, _ => Run(SwitchVisibility)),
+            new("clickThrough", ClickThroughBox, _ => Run(SwitchThrough)),
+            new("topmost", TopmostBox, value => Run(() => SetTopmost(value)))
+        ]);
         _typing = DispatcherQueue.CreateTimer();
         _typing.Interval = TimeSpan.FromMilliseconds(320);
         _typing.IsRepeating = false;
@@ -91,7 +97,12 @@ public sealed partial class MainWindow : Window
     private void GuardTargetAppearance()
     {
         if (_windows.Target == null || Environment.TickCount64 < _retryGuardAt) return;
-        try { _windows.EnforceAppearance(); }
+        try
+        {
+            _windows.EnforceAppearance();
+            var interval = TimeSpan.FromMilliseconds(_windows.UsesBackdrop && !_windows.IsHidden ? 33 : 80);
+            if (_guard.Interval != interval) _guard.Interval = interval;
+        }
         catch (Exception ex)
         {
             _retryGuardAt = Environment.TickCount64 + 1500;
@@ -228,13 +239,16 @@ public sealed partial class MainWindow : Window
     private void ChangeTopmost(object sender, RoutedEventArgs e)
     {
         if (!_ready || _updating || _windows.Target == null) return;
-        Run(() =>
-        {
-            try { _windows.SetTopmost(TopmostBox.IsChecked == true); }
-            finally { SyncControls(); }
-            if (_invert || _gray) ApplyAppearance();
-            Status("");
-        });
+        Run(() => SetTopmost(TopmostBox.IsChecked == true));
+    }
+
+    private void SetTopmost(bool enabled)
+    {
+        if (_windows.Target == null) return;
+        try { _windows.SetTopmost(enabled); }
+        finally { SyncControls(); }
+        if (_invert || _gray) ApplyAppearance();
+        Status("");
     }
 
     private void CommitOpacity(object sender, RoutedEventArgs e)

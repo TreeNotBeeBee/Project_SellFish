@@ -19,4 +19,4 @@ try {
     & $DotnetPath @taskPublishArgs
     if ($LASTEXITCODE -ne 0) { throw "Publish failed ($LASTEXITCODE)." }
 } finally { Pop-Location }
-Write-Host "Ready: $(Join-Path $OutputPath 'WindowPilot.exe')"
+Write-Host "Ready: $(Join-Path $OutputPath 'sell fish.exe')"

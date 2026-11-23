@@ -25,6 +25,11 @@ public sealed class WindowService : IDisposable
     private const uint LwaAlpha = 2;
     private readonly string _journalPath;
     private Snapshot? _snapshot;
+    private BackdropOpacityLayer? _backdrop;
+    private bool _preferBackdrop, _zeroPass;
+    private string? _backdropFailure;
+    private bool _reportedBackdropFailure;
+    public bool UsesBackdrop => _backdrop != null && _snapshot?.RequestedAlpha is < 255;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public WindowService(string? journalPath = null, bool recoverPrevious = true)
@@ -44,13 +49,14 @@ public sealed class WindowService : IDisposable
     public bool IsHidden => IsAlive() && !Native.IsWindowVisible(Target!.Handle);
     public bool IsTopmost => IsAlive() && (ReadStyle(Target!.Handle) & WsExTopmost) != 0;
     public bool CanClickThrough => _snapshot is { } s && (s.OriginallyLayered || s.OpacitySupported);
-    public bool IsClickThrough => _snapshot?.RequestedClickThrough ?? (IsAlive() &&
+    public bool IsClickThrough => _snapshot?.RequestedClickThrough ?? (_zeroPass ? _snapshot is { OriginallyLayered: true, OriginallyTransparent: true } : IsAlive() &&
         (ReadStyle(Target!.Handle) & (WsExLayered | WsExTransparent)) == (WsExLayered | WsExTransparent));
     public int? Opacity
     {
         get
         {
             if (!IsAlive()) return null;
+            if (_preferBackdrop && _snapshot?.RequestedAlpha is byte requested) return (int)Math.Round(requested * 100d / 255);
             var hwnd = Target!.Handle;
             if ((GetClassStyle(hwnd) & 0x60) != 0) return null;
             if ((ReadStyle(hwnd) & WsExLayered) == 0) return 100;
@@ -110,6 +116,10 @@ public sealed class WindowService : IDisposable
         }
         if (!Native.SetProp(target.Handle, snapshot.Marker, (nint)1)) throw Failure("标记窗口以支持安全恢复");
         _snapshot = snapshot;
+        // DingTalk repaints its own layered surface during mouse interaction on some versions.
+        // Select independent composition at the first adjustment to avoid even an initial flash.
+        _preferBackdrop = string.Equals(target.ProcessName, "DingTalk", StringComparison.OrdinalIgnoreCase)
+            && (!snapshot.OriginallyLayered || (snapshot.LayeredFlags & LwaAlpha) == 0 || snapshot.Alpha == 255);
         try { Persist(); }
         catch
         {
@@ -126,6 +136,7 @@ public sealed class WindowService : IDisposable
         snapshot.TopmostChanged = true;
         Persist();
         SetTopmostNative(snapshot.Target, enabled);
+        if (_backdrop != null) ApplyManagedAppearance(snapshot);
     }
 
     public void SetOpacity(int percent)
@@ -144,10 +155,17 @@ public sealed class WindowService : IDisposable
         if (!snapshot.OpacityChanged && (ReadStyle(hwnd) & WsExLayered) != 0 &&
             !Native.GetLayeredWindowAttributes(hwnd, out _, out _, out _))
             throw new InvalidOperationException("此窗口已切换绘制表面，无法安全调节不透明度。");
-        RecordAppearanceChange(snapshot, changesAlpha: true, changesClickThrough: false);
+        if (!_preferBackdrop) RecordAppearanceChange(snapshot, changesAlpha: true, changesClickThrough: false);
+        else if (NativeSurfaceAlpha(hwnd) < alpha)
+        {
+            // Background blending can only reduce brightness. If the application supplies
+            // less alpha than the *newly entered* value, raise its base once on this user action.
+            RecordAppearanceChange(snapshot, changesAlpha: true, changesClickThrough: false);
+            ApplyAppearance(snapshot, 255, snapshot.RequestedClickThrough);
+        }
         var previous = snapshot.RequestedAlpha;
         snapshot.RequestedAlpha = alpha;
-        try { ApplyAppearance(snapshot); }
+        try { ApplyManagedAppearance(snapshot); }
         catch
         {
             snapshot.RequestedAlpha = previous;
@@ -164,7 +182,7 @@ public sealed class WindowService : IDisposable
         snapshot.RequestedClickThrough = enabled;
         try
         {
-            ApplyAppearance(snapshot);
+            ApplyManagedAppearance(snapshot, releasePassLayer: !enabled);
             // If click-through supplied the only reason for layering, give back the original
             // style now. Subsequent ticks should leave the target's own appearance alone.
             if (!enabled && !snapshot.OriginallyLayered && !snapshot.RequestedAlpha.HasValue)
@@ -177,13 +195,87 @@ public sealed class WindowService : IDisposable
         }
     }
 
-    /// <summary>Repairs changes made by the target during hover/activation. No disk I/O or write when stable.</summary>
+    /// <summary>Tracks the bound presentation without repeatedly writing a target's contested alpha.</summary>
     public void EnforceAppearance()
     {
         var snapshot = _snapshot;
         if (snapshot == null || (!snapshot.RequestedAlpha.HasValue && !snapshot.RequestedClickThrough.HasValue)) return;
-        if (Native.GetProp((nint)snapshot.Identity.Handle, snapshot.Marker) != (nint)1) return;
-        ApplyAppearance(snapshot);
+        var hwnd = (nint)snapshot.Identity.Handle;
+        if (Native.GetProp(hwnd, snapshot.Marker) != (nint)1) { _backdrop?.Hide(); return; }
+        if (!_preferBackdrop && snapshot.RequestedAlpha is byte requested && requested < 255
+            && NativeSurfaceAlpha(hwnd) != requested)
+        {
+            if (_backdropFailure != null)
+            {
+                // This display/driver cannot build the independent layer. Keep normal
+                // click-through enforcement, but do not bring back the alpha tug of war.
+                ApplyAppearance(snapshot, null, snapshot.RequestedClickThrough, removeUnusedLayer: false);
+                if (!_reportedBackdropFailure)
+                {
+                    _reportedBackdropFailure = true;
+                    throw new InvalidOperationException("目标程序已重设不透明度，当前显示环境无法启用稳定透明图层。"
+                        + _backdropFailure);
+                }
+                return;
+            }
+            _preferBackdrop = true;
+        }
+        ApplyManagedAppearance(snapshot);
+    }
+
+    private static byte NativeSurfaceAlpha(nint hwnd)
+    {
+        if ((ReadStyle(hwnd) & WsExLayered) == 0) return 255;
+        return Native.GetLayeredWindowAttributes(hwnd, out _, out byte alpha, out uint flags) && (flags & LwaAlpha) != 0
+            ? alpha : (byte)255;
+    }
+
+    private void ApplyManagedAppearance(Snapshot snapshot, bool releasePassLayer = false)
+    {
+        if (!_preferBackdrop || snapshot.RequestedAlpha is not byte requested)
+        {
+            ApplyAppearance(snapshot, snapshot.RequestedAlpha, snapshot.RequestedClickThrough);
+            return;
+        }
+
+        // At zero the old native alpha path also passed mouse input through the window.
+        // Preserve the explicit click-through choice when the user raises opacity again.
+        bool? pass = snapshot.RequestedClickThrough;
+        if (requested == 0)
+        {
+            RecordAppearanceChange(snapshot, changesAlpha: !snapshot.OriginallyLayered, changesClickThrough: true);
+            pass = true;
+        }
+        else if (_zeroPass) pass ??= snapshot.OriginallyTransparent;
+        if (pass.HasValue)
+            ApplyAppearance(snapshot, null, pass, removeUnusedLayer: _zeroPass || releasePassLayer);
+        _zeroPass = requested == 0;
+        if (requested == 255)
+        {
+            _backdrop?.Hide();
+            return;
+        }
+
+        try
+        {
+            _backdrop ??= new BackdropOpacityLayer(snapshot.Target.Handle);
+            byte nativeAlpha = NativeSurfaceAlpha(snapshot.Target.Handle);
+            // Account for opacity the target already supplies, including application fades.
+            byte weight = nativeAlpha == 0 ? (byte)255 : (byte)Math.Min(255, (requested * 255 + nativeAlpha / 2) / nativeAlpha);
+            _backdrop.Track(weight, (ReadStyle(snapshot.Target.Handle) & WsExTopmost) != 0);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            _backdrop?.Dispose(); _backdrop = null;
+            _preferBackdrop = false;
+            _backdropFailure = ex.Message;
+            // Restore the previous native presentation option once. A fresh binding may
+            // try the compositor again after the driver or desktop session changes.
+            RecordAppearanceChange(snapshot, changesAlpha: true, changesClickThrough: false);
+            bool? fallbackPass = snapshot.RequestedClickThrough ?? (_zeroPass ? snapshot.OriginallyTransparent : null);
+            ApplyAppearance(snapshot, requested, fallbackPass);
+            _zeroPass = false;
+        }
     }
 
     private void RecordAppearanceChange(Snapshot snapshot, bool changesAlpha, bool changesClickThrough)
@@ -202,16 +294,14 @@ public sealed class WindowService : IDisposable
         }
     }
 
-    private static void ApplyAppearance(Snapshot snapshot)
+    private static void ApplyAppearance(Snapshot snapshot, byte? alpha, bool? pass, bool removeUnusedLayer = true)
     {
         var hwnd = (nint)snapshot.Identity.Handle;
         long style = ReadStyle(hwnd);
         long desiredStyle = style;
-        byte? alpha = snapshot.RequestedAlpha;
-        bool? pass = snapshot.RequestedClickThrough;
         if (pass == true || (alpha.HasValue && (alpha < 255 || snapshot.OriginallyLayered)))
             desiredStyle |= WsExLayered;
-        else if (pass == false && !alpha.HasValue && !snapshot.OriginallyLayered && snapshot.OpacityChanged)
+        else if (removeUnusedLayer && pass == false && !alpha.HasValue && !snapshot.OriginallyLayered && snapshot.OpacityChanged)
             desiredStyle &= ~WsExLayered;
         if (pass.HasValue)
         {
@@ -253,6 +343,7 @@ public sealed class WindowService : IDisposable
             snapshot.HidePlacement = PlacementData.From(ReadPlacement(snapshot.Target.Handle));
             snapshot.VisibilityChanged = true;
             Persist(); // Save visibility/placement before issuing SW_HIDE.
+            _backdrop?.Hide();
             SetVisible(snapshot, false);
         }
         else
@@ -261,11 +352,15 @@ public sealed class WindowService : IDisposable
             // A successful show completes a hide/show cycle; original visibility still wins on Release.
             snapshot.VisibilityChanged = !snapshot.OriginalVisible;
             Persist();
+            if (_backdrop != null) ApplyManagedAppearance(snapshot);
         }
     }
 
     public void Release()
     {
+        _backdrop?.Dispose(); _backdrop = null;
+        _preferBackdrop = _zeroPass = _reportedBackdropFailure = false;
+        _backdropFailure = null;
         if (_snapshot == null) return;
         var snapshot = _snapshot;
         if (!SnapshotAlive(snapshot))

@@ -31,6 +31,7 @@ internal sealed class NativeEffectOverlay : IDisposable
         // older window-capture implementations to include it in the source content.
         _hwnd = EffectNative.CreateWindowEx(WsExLayered | WsExTransparent | WsExToolWindow | WsExNoActivate, ClassName, "WindowPilot effect", 0x80000000, 0, 0, 1, 1, 0, 0, EffectNative.GetModuleHandle(null), 0);
         if (_hwnd == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建窗口颜色效果图层。");
+        BackdropOpacityLayer.RegisterEffect(target, _hwnd);
         _dc = EffectNative.CreateCompatibleDC(0);
         if (_dc == 0) { Dispose(); throw new Win32Exception(Marshal.GetLastWin32Error()); }
     }
@@ -64,10 +65,11 @@ internal sealed class NativeEffectOverlay : IDisposable
         if (EffectNative.DwmGetWindowAttribute(_target, 9, out EffectNative.Rect rect, Marshal.SizeOf<EffectNative.Rect>()) != 0 && !EffectNative.GetWindowRect(_target, out rect)) { Hide(); return; }
         // The capture surface uses extended frame bounds, excluding invisible resize borders.
         int x = rect.Left, y = rect.Top;
-        nint previous = EffectNative.GetWindow(_target, 3); // GW_HWNDPREV
+        nint anchor = BackdropOpacityLayer.AnchorForEffect(_target);
+        nint previous = EffectNative.GetWindow(anchor, 3); // GW_HWNDPREV
         while (previous == _hwnd) previous = EffectNative.GetWindow(previous, 3);
         bool changeBand = _lastTopmost != topmost;
-        bool needsZOrder = EffectNative.GetWindow(_target, 3) != _hwnd;
+        bool needsZOrder = EffectNative.GetWindow(anchor, 3) != _hwnd;
         bool needsMove = _x != x || _y != y || _trackedWidth != width || _trackedHeight != height;
         if (changeBand)
         {
@@ -95,7 +97,7 @@ internal sealed class NativeEffectOverlay : IDisposable
     }
     public void Dispose()
     {
-        if (_hwnd != 0) { EffectNative.DestroyWindow(_hwnd); _hwnd = 0; }
+        if (_hwnd != 0) { BackdropOpacityLayer.RegisterEffect(_target, 0); EffectNative.DestroyWindow(_hwnd); _hwnd = 0; }
         ReleaseBitmap();
         if (_dc != 0) { EffectNative.DeleteDC(_dc); _dc = 0; }
     }

@@ -3,7 +3,7 @@ param(
     [string]$ArchivePath = (Join-Path $PSScriptRoot "dist\WindowPilot-win-x64.zip")
 )
 $ErrorActionPreference = "Stop"
-if (!(Test-Path -LiteralPath (Join-Path $PublishPath "WindowPilot.exe"))) { throw "Build with build.ps1 first." }
+if (!(Test-Path -LiteralPath (Join-Path $PublishPath "sell fish.exe"))) { throw "Build with build.ps1 first." }
 foreach ($taskName in @("README.md", "THIRD-PARTY-NOTICES.md")) {
     $taskSource = Join-Path $PSScriptRoot $taskName
     if (Test-Path -LiteralPath $taskSource) { Copy-Item -LiteralPath $taskSource -Destination $PublishPath -Force }

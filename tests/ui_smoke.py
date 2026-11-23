@@ -94,12 +94,38 @@ def main(exe):
             (profile / "theme.txt").write_text("light", encoding="utf8")
             env = {**os.environ, "WINDOWPILOT_PROFILE_DIR": str(profile)}
             controller = subprocess.Popen([str(exe)], cwd=exe.parent, env=env)
-            spec = desktop.window(process=controller.pid, class_name="WinUIDesktopWin32WindowClass", title="窗口轻控 · WindowPilot")
+            spec = desktop.window(process=controller.pid, class_name="WinUIDesktopWin32WindowClass", title="sell fish")
             spec.wait("visible", timeout=40)
             panel = spec.wrapper_object()
             def control(id):
                 return spec.child_window(auto_id=id, found_index=0).wrapper_object()
             combo = control("TargetBox")
+            def size():
+                left, top, right, bottom = win32gui.GetWindowRect(panel.handle)
+                return right-left, bottom-top
+            def verify_fixed():
+                style = win32gui.GetWindowLong(panel.handle, win32con.GWL_STYLE)
+                assert not (style & (win32con.WS_THICKFRAME | win32con.WS_MAXIMIZEBOX)), hex(style)
+            def probe_mini():
+                full = size()
+                verify_fixed()
+                control("CollapseButton").invoke()
+                wait(lambda: size()[1] < full[1] / 2 and size()[0] < full[0], "visible input-method-sized toolbar")
+                verify_fixed()
+                assert win32gui.IsWindowVisible(panel.handle) and not win32gui.IsIconic(panel.handle)
+                assert [c.element_info.automation_id for c in panel.descendants(control_type="CheckBox")
+                        if c.is_visible()] == ["Mini.hide", "Mini.clickThrough", "Mini.topmost"]
+                assert win32gui.SendMessage(panel.handle, 0x007F, 1, 0) or win32gui.SendMessage(panel.handle, 0x007F, 0, 0)
+                taskbar = desktop.window(class_name="Shell_TrayWnd")
+                if taskbar.exists():
+                    assert not any("sell fish" in n.window_text().lower() for n in taskbar.descendants(control_type="Button"))
+                second = subprocess.run([str(exe)], cwd=exe.parent, env=env, timeout=15)
+                assert second.returncode == 0 and controller.poll() is None
+                preview = os.environ.get("SELL_FISH_MINI_PREVIEW")
+                if preview: panel.capture_as_image().save(preview)
+                print("PASS fixed mini frame, icon, controller absent from taskbar, duplicate launch", size(), flush=True)
+                control("ExpandButton").invoke()
+                wait(lambda: size() == full, "restore full controller dimensions")
             # Drag from a blank point inside the client, not from a control or resize border.
             x, y = win32gui.ClientToScreen(panel.handle, (9, 14))
             before = win32gui.GetWindowRect(panel.handle)
@@ -114,6 +140,7 @@ def main(exe):
             assert win32gui.GetWindowRect(panel.handle)[:2] == released, "movement must stop on button release"
             choose(panel, control("ThemeBox"), "黑")
             wait(lambda: (profile/"theme.txt").read_text(encoding="utf8").strip()=="dark", "black theme persists")
+            probe_mini()
             choose(panel, control("ThemeBox"), "白")
             choose(panel, combo, name)
             hidden = control("HiddenBox")
@@ -124,9 +151,7 @@ def main(exe):
             box = control("OpacityInput")
             box.set_edit_text("37")
             wait(lambda: alpha(hwnd)==94, "typed 37 percent")
-            # Mimic a framework resetting its HWND opacity on pointer entry.
-            win32gui.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
-            wait(lambda: alpha(hwnd)==94, "external alpha reset repaired")
+            # Repeated target-owned alpha resets are covered by the pixel-based native fixture.
             press_box = control("ClickThroughBox")
             press_box.toggle()
             wait(lambda: style() & win32con.WS_EX_TRANSPARENT and alpha(hwnd)==94, "through plus opacity")
@@ -170,9 +195,21 @@ def main(exe):
             choose(panel, combo, "释放")
             wait(lambda: alpha(hwnd)==255 and not (style() & (8|0x20|0x80000)), "release restores native window styles")
             choose(panel, combo, name)
-            press_box.toggle()
-            hidden.toggle()
-            win32gui.PostMessage(panel.handle, win32con.WM_CLOSE, 0, 0)
+            (profile/"mini-toolbar.json").write_text('["topmost", "clickThrough", "hide"]', encoding="utf8")
+            control("CollapseButton").invoke()
+            wait(lambda: spec.child_window(auto_id="Mini.hide").exists(), "open customized toolbar")
+            actions = [c.element_info.automation_id for c in panel.descendants(control_type="CheckBox") if c.is_visible()]
+            assert actions == ["Mini.topmost", "Mini.clickThrough", "Mini.hide"], actions
+            control("Mini.topmost").toggle()
+            wait(lambda: style() & win32con.WS_EX_TOPMOST, "mini button controls target z-order")
+            control("Mini.clickThrough").toggle()
+            wait(lambda: style() & win32con.WS_EX_TRANSPARENT, "mini button enables passthrough")
+            control("Mini.hide").toggle()
+            wait(lambda: not win32gui.IsWindowVisible(hwnd), "mini button hides target")
+            control("ExpandButton").invoke()
+            wait(lambda: hidden.get_toggle_state()==1 and press_box.get_toggle_state()==1, "main and mini controls share state")
+            control("CollapseButton").invoke()
+            control("ExitButton").invoke()
             wait(lambda: controller.poll() is not None, "close compact panel")
             wait(lambda: win32gui.IsWindowVisible(hwnd) and not (style() & (8|0x20|0x80000)), "exit restores hidden mouse-transparent target")
     finally:

@@ -5,7 +5,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $taskRoot = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
 $taskSourceFiles = Get-ChildItem -LiteralPath $taskRoot -Recurse -File -Force | Where-Object {
     $taskRelative = $_.FullName.Substring($taskRoot.Length + 1).Replace('\', '/')
-    $taskRelative -notmatch '(^|/)(bin|obj|artifacts|dist|\.git|\.vs)/' -and
+    $taskRelative -notmatch '(^|/)(bin|obj|artifacts|dist|\.git|\.vs|__pycache__)/' -and
     $taskRelative -notmatch '^tests/.*\.json$' -and
     $taskRelative -notmatch '\.(zip|sha256|user|suo)$' -and
     $_.FullName -ne [IO.Path]::GetFullPath($ArchivePath)

@@ -15,7 +15,8 @@ The assertions cover:
 - Window identity, single binding, and restoration when rebinding or releasing.
 - Topmost changes without activating the target.
 - Exact opacity bytes, including zero, byte one for effects, and original alpha/color-key/flags restoration.
-- Real pointer movement onto a fixture that resets its alpha or removes its layered style. The appearance guard restores the requested alpha with no additional recovery-file writes.
+- A fixture that overwrites its alpha on every mouse move. Desktop pixel samples reproduce the former full-opacity flash and confirm 24 samples at the requested 38% after switching to independent composition. The original remains opaque and interactive.
+- A live background color change, removal of the target's layered style, and compatibility-mode zero, hide/show and click-through transitions.
 - Real mouse clicks through a visible semitransparent fixture into a second process underneath, followed by restored hit testing when pass-through is disabled.
 - Click-through for a window using per-pixel alpha while preserving that window's native rendering API.
 - Real target visibility and retention of the same bound HWND through hide/show.

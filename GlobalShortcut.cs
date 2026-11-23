@@ -9,9 +9,32 @@ using Windows.System;
 
 namespace WindowPilot;
 
-internal sealed record Shortcut(uint Modifiers, uint Key)
+internal sealed record Shortcut(uint Modifiers, uint Key, byte Sides = 0)
 {
-    internal bool IsValid => Modifiers <= 15 && IsMainKey(Key);
+    internal bool IsTap => SideBit(Key) != 0 && Modifiers == 0 && Sides == 0;
+    internal bool NeedsHook => IsTap || Sides != 0;
+    internal bool IsValid => IsTap || (IsMainKey(Key) && Modifiers <= 15 &&
+        (Sides == 0 || ModifierFamilies(Sides) == Modifiers));
+
+    // Previous versions stored the RegisterHotKey family flags only. Sides == 0
+    // retains their either-side semantics. The bit order is part of the file format.
+    internal static readonly uint[] ModifierKeys = [0xA2, 0xA3, 0xA4, 0xA5, 0xA0, 0xA1, 0x5B, 0x5C];
+    internal static byte SideBit(uint key) => key switch
+    {
+        0xA2 => 1, 0xA3 => 2, 0xA4 => 4, 0xA5 => 8,
+        0xA0 => 16, 0xA1 => 32, 0x5B => 64, 0x5C => 128, _ => 0
+    };
+    internal static uint ModifierFamilies(byte sides)
+    {
+        uint families = 0;
+        if ((sides & 3) != 0) families |= 2;
+        if ((sides & 12) != 0) families |= 1;
+        if ((sides & 48) != 0) families |= 4;
+        if ((sides & 192) != 0) families |= 8;
+        return families;
+    }
+    internal bool Overlaps(Shortcut other) => Key == other.Key && Modifiers == other.Modifiers &&
+        (Sides == 0 || other.Sides == 0 || Sides == other.Sides);
 
     // VK_ESCAPE and VK_TAB stay available for cancel and keyboard navigation. F12 is reserved.
     internal static bool IsMainKey(uint key) => key is
@@ -22,16 +45,29 @@ internal sealed record Shortcut(uint Modifiers, uint Key)
     public override string ToString()
     {
         var parts = new List<string>(5);
-        if ((Modifiers & 2) != 0) parts.Add("Ctrl");
-        if ((Modifiers & 1) != 0) parts.Add("Alt");
-        if ((Modifiers & 4) != 0) parts.Add("Shift");
-        if ((Modifiers & 8) != 0) parts.Add("Win");
+        if (Sides != 0)
+        {
+            foreach (var modifier in ModifierKeys)
+                if ((Sides & SideBit(modifier)) != 0) parts.Add(DescribeKey(modifier));
+        }
+        else
+        {
+            if ((Modifiers & 2) != 0) parts.Add("Ctrl");
+            if ((Modifiers & 1) != 0) parts.Add("Alt");
+            if ((Modifiers & 4) != 0) parts.Add("Shift");
+            if ((Modifiers & 8) != 0) parts.Add("Win");
+        }
         parts.Add(DescribeKey(Key));
         return string.Join(" + ", parts);
     }
 
     private static string DescribeKey(uint key)
     {
+        if (SideBit(key) != 0) return key switch
+        {
+            0xA2 => "左 Ctrl", 0xA3 => "右 Ctrl", 0xA4 => "左 Alt", 0xA5 => "右 Alt",
+            0xA0 => "左 Shift", 0xA1 => "右 Shift", 0x5B => "左 Win", _ => "右 Win"
+        };
         if (key is >= 0x41 and <= 0x5A or >= 0x30 and <= 0x39) return ((char)key).ToString();
         if (key is >= 0x70 and <= 0x87) return $"F{key - 0x6F}";
         if (key is >= 0x60 and <= 0x69) return $"Num {key - 0x60}";
@@ -65,7 +101,33 @@ internal sealed record Shortcut(uint Modifiers, uint Key)
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetKeyNameTextW(int keyData, StringBuilder text, int max);
 }
 
-/// <summary>Owns two independent OS hotkeys and their single-chord recorder fields.</summary>
+/// <summary>Recognizes a solitary modifier release, including repeats and interrupted taps.</summary>
+internal sealed class ModifierGesture
+{
+    internal byte Held { get; private set; }
+    private uint _tapKey;
+
+    internal void Reset(byte held) { Held = held; CancelTap(); }
+    internal void CancelTap() => _tapKey = 0;
+    internal bool Observe(uint key, bool pressed, bool canStartTap)
+    {
+        byte bit = Shortcut.SideBit(key);
+        if (bit == 0) { CancelTap(); return false; }
+        if (pressed)
+        {
+            if ((Held & bit) != 0) return false;
+            _tapKey = Held == 0 && canStartTap ? key : 0;
+            Held |= bit;
+            return false;
+        }
+        bool complete = _tapKey == key;
+        Held &= (byte)~bit;
+        CancelTap();
+        return complete;
+    }
+}
+
+/// <summary>Owns the two global shortcuts and their single-field recorders.</summary>
 internal sealed class ShortcutEditor : IDisposable
 {
     private sealed class Binding(string name, string file, TextBox field, Action activate, Shortcut fallback, int baseId)
@@ -77,6 +139,7 @@ internal sealed class ShortcutEditor : IDisposable
         internal int BaseId { get; } = baseId;
         internal Shortcut Value { get; set; } = Shortcut.Load(System.IO.Path.Combine(AppProfile.DirectoryPath, file), fallback);
         internal int RegisteredId { get; set; }
+        internal bool Active { get; set; }
     }
 
     private const uint WmActivate = 0x0006, WmHotkey = 0x0312;
@@ -85,9 +148,12 @@ internal sealed class ShortcutEditor : IDisposable
     private readonly Binding[] _bindings;
     private readonly Action<string> _status;
     private readonly SubclassProc _windowProc;
-    private readonly KeyboardProc _keyboardProc;
+    private readonly HookProc _keyboardProc;
+    private readonly HookProc _mouseProc;
     private readonly PointerEventHandler _pointerHandler;
-    private nint _keyboardHook;
+    private readonly ModifierGesture _gesture = new();
+    private readonly HashSet<uint> _consumedKeys = [];
+    private nint _keyboardHook, _mouseHook;
     private Binding? _editing;
     private Shortcut? _candidate;
     private bool _finishing;
@@ -105,6 +171,7 @@ internal sealed class ShortcutEditor : IDisposable
         ];
         _windowProc = Receive;
         _keyboardProc = CaptureKey;
+        _mouseProc = ObserveMouse;
         _pointerHandler = OnPointer;
         if (!SetWindowSubclass(hwnd, _windowProc, SubclassId, 0))
             throw new InvalidOperationException("无法初始化面板快捷键。");
@@ -126,9 +193,9 @@ internal sealed class ShortcutEditor : IDisposable
 
     private void Display(Binding binding)
     {
-        binding.Field.Text = binding.RegisteredId == 0 ? "" : binding.Value.ToString();
-        binding.Field.PlaceholderText = binding.RegisteredId == 0 ? "设置快捷键" : "按下快捷键";
-        ToolTipService.SetToolTip(binding.Field, $"点击录入{binding.Name}快捷键，Esc 取消");
+        binding.Field.Text = binding.Active ? binding.Value.ToString() : "";
+        binding.Field.PlaceholderText = binding.Active ? "按下快捷键" : "设置快捷键";
+        ToolTipService.SetToolTip(binding.Field, $"点击录入{binding.Name}快捷键，支持单按左 / 右修饰键，Esc 取消");
     }
 
     private Binding? ForField(object sender) =>
@@ -149,7 +216,7 @@ internal sealed class ShortcutEditor : IDisposable
 
     private void OnBlur(object sender, RoutedEventArgs args)
     {
-        if (sender is TextBox field && _editing?.Field == field) EndRecording();
+        if (!_finishing && sender is TextBox field && _editing?.Field == field) EndRecording();
     }
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs args)
@@ -166,12 +233,11 @@ internal sealed class ShortcutEditor : IDisposable
     {
         if (_disposed || _editing == binding) return;
         EndRecording();
-        // Only the focused recorder needs a hook. WM_HOTKEY otherwise diverts existing
-        // chords away from the field, sometimes to another application.
-        _keyboardHook = SetWindowsHookExW(13, _keyboardProc, GetModuleHandleW(null), 0);
-        if (_keyboardHook == 0)
+        try { EnsureHooks(mouse: true); }
+        catch (Win32Exception ex)
         {
-            _status("无法开始录入快捷键，请重新点击。");
+            ReleaseUnusedHooks();
+            _status(ex.Message);
             return;
         }
         _editing = binding;
@@ -181,37 +247,157 @@ internal sealed class ShortcutEditor : IDisposable
 
     private void EndRecording()
     {
-        if (_keyboardHook != 0) UnhookWindowsHookEx(_keyboardHook);
-        _keyboardHook = 0;
+        _gesture.CancelTap();
         var previous = _editing;
         _editing = null;
         _candidate = null;
         _finishing = false;
+        ReleaseUnusedHooks();
         if (previous != null) Display(previous);
+    }
+
+    private void EnsureHooks(bool mouse)
+    {
+        if (_keyboardHook == 0)
+        {
+            byte held = 0;
+            foreach (var key in Shortcut.ModifierKeys)
+                if (GetAsyncKeyState((int)key) < 0) held |= Shortcut.SideBit(key);
+            _gesture.Reset(held);
+            _keyboardHook = InstallHook(13, _keyboardProc);
+        }
+        if (mouse && _mouseHook == 0) _mouseHook = InstallHook(14, _mouseProc);
+    }
+
+    private static nint InstallHook(int kind, HookProc callback)
+    {
+        nint hook = SetWindowsHookExW(kind, callback, GetModuleHandleW(null), 0);
+        if (hook == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法监听快捷键，请重新点击并录入。");
+        return hook;
+    }
+
+    private void ReleaseUnusedHooks()
+    {
+        if (!_disposed && _editing != null) return;
+        if (_mouseHook != 0 && (_disposed || !_bindings.Any(b => b.Active && b.Value.IsTap)))
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = 0;
+        }
+        if (_keyboardHook != 0 && (_disposed || !_bindings.Any(b => b.Active && b.Value.NeedsHook)))
+        {
+            UnhookWindowsHookEx(_keyboardHook);
+            _keyboardHook = 0;
+            _consumedKeys.Clear();
+        }
+    }
+
+    private nint ObserveMouse(int code, nuint message, nint data)
+    {
+        // A click, button release or wheel gesture uses the modifier. Mere movement does not.
+        if (code >= 0 && message is >= 0x201 and <= 0x20E) _gesture.CancelTap();
+        return CallNextHookEx(0, code, message, data);
+    }
+
+    private static uint PhysicalKey(nint data)
+    {
+        uint key = unchecked((uint)Marshal.ReadInt32(data));
+        int scan = Marshal.ReadInt32(data, 4);
+        // On AltGr layouts Windows pairs right Alt with a simulated left Ctrl.
+        // SCANCODE_SIMULATED (0x200) distinguishes it from a physical Ctrl.
+        if (key is 0x11 or 0xA2 && scan == 0x21D) return 0;
+        // KBDLLHOOKSTRUCT typically supplies a side-specific VK. Some sources send
+        // generic VKs instead; distinguish those using the scan code and extended flag.
+        return key switch
+        {
+            0x10 => scan == 0x36 ? 0xA1u : 0xA0u,
+            0x11 => (Marshal.ReadInt32(data, 8) & 1) != 0 ? 0xA3u : 0xA2u,
+            0x12 => (Marshal.ReadInt32(data, 8) & 1) != 0 ? 0xA5u : 0xA4u,
+            _ => key
+        };
+    }
+
+    private static bool OtherInputHeld()
+    {
+        // Called only on the initial down edge of a potential tap. Check keys and
+        // mouse buttons already held before that edge without retaining typed input.
+        for (uint key = 1; key < 255; key++)
+        {
+            if (key is >= 0x10 and <= 0x12 || Shortcut.SideBit(key) != 0) continue;
+            if (GetAsyncKeyState((int)key) < 0) return true;
+        }
+        return false;
     }
 
     private nint CaptureKey(int code, nuint message, nint data)
     {
-        if (code < 0 || _editing is not { } binding || GetForegroundWindow() != _hwnd)
-            return CallNextHookEx(0, code, message, data);
-
-        uint key = unchecked((uint)Marshal.ReadInt32(data));
-        const uint escape = 0x1B, tab = 0x09;
-        if (key == tab || key is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C or >= 0xA0 and <= 0xA5)
-            return CallNextHookEx(0, code, message, data);
         bool pressed = message is 0x100 or 0x104;
-        bool released = message is 0x101 or 0x105;
-        if (!pressed && !released) return CallNextHookEx(0, code, message, data);
-        if (_finishing) return 1;
-        if (pressed && (_candidate == null || key == escape))
-            _candidate = new Shortcut(ReadModifiers(), key);
-        if (released && _candidate is { } selected && selected.Key == key)
+        if (code < 0 || (!pressed && message is not (0x101 or 0x105)))
+            return CallNextHookEx(0, code, message, data);
+        uint key = PhysicalKey(data);
+        if (key == 0) return CallNextHookEx(0, code, message, data);
+        bool modifier = Shortcut.SideBit(key) != 0;
+        bool recording = _editing != null && GetForegroundWindow() == _hwnd;
+        bool tapAllowed = modifier && pressed && _gesture.Held == 0 &&
+            (recording || HasTapBinding(key)) && !OtherInputHeld();
+        bool tapped = _gesture.Observe(key, pressed, tapAllowed);
+        if (_consumedKeys.Contains(key))
         {
-            _finishing = true;
-            // File IO, UI callbacks and registration must run outside the low-level hook.
-            binding.Field.DispatcherQueue.TryEnqueue(() => Finish(binding, selected));
+            if (!pressed) _consumedKeys.Remove(key);
+            return 1;
         }
-        return 1;
+        if (recording && _editing is { } binding)
+        {
+            if (RecordEdge(binding, key, pressed, modifier, tapped)) return 1;
+        }
+        else if (_editing == null)
+        {
+            foreach (var action in _bindings)
+            {
+                if (!action.Active || !action.Value.NeedsHook || action.Value.Key != key) continue;
+                if (tapped && action.Value.IsTap) QueueActivation(action);
+                if (pressed && !modifier && action.Value.Sides == _gesture.Held && GetAsyncKeyState((int)key) >= 0)
+                {
+                    _consumedKeys.Add(key);
+                    QueueActivation(action);
+                    return 1;
+                }
+            }
+        }
+        return CallNextHookEx(0, code, message, data);
+    }
+
+    private bool HasTapBinding(uint key)
+    {
+        foreach (var binding in _bindings)
+            if (binding.Active && binding.Value.IsTap && binding.Value.Key == key) return true;
+        return false;
+    }
+
+    private bool RecordEdge(Binding binding, uint key, bool pressed, bool modifier, bool tapped)
+    {
+        const uint escape = 0x1B, tab = 0x09;
+        if (_finishing || key == tab) return false;
+        if (modifier)
+        {
+            if (tapped && _candidate == null) ScheduleFinish(binding, new(0, key));
+            // Pass both edges so an ordinary modifier chord and the shell still see them.
+            return false;
+        }
+        if (pressed && (_candidate == null || key == escape))
+            _candidate = new(Shortcut.ModifierFamilies(_gesture.Held), key, _gesture.Held);
+        if (!pressed && _candidate is { } selected && selected.Key == key)
+            ScheduleFinish(binding, selected);
+        return true;
+    }
+
+    private void ScheduleFinish(Binding binding, Shortcut selected)
+    {
+        _candidate = selected;
+        _finishing = true;
+        // Leave all disk IO, registration and UI work outside the hook.
+        binding.Field.DispatcherQueue.TryEnqueue(() => Finish(binding, selected));
     }
 
     private void Finish(Binding binding, Shortcut selected)
@@ -222,8 +408,6 @@ internal sealed class ShortcutEditor : IDisposable
             if (selected.Key == 0x1B) return;
             if (!selected.IsValid)
                 throw new InvalidOperationException("该按键不可用，请重新点击并录入。");
-            if (_bindings.Any(other => other != binding && other.RegisteredId != 0 && other.Value == selected))
-                throw new InvalidOperationException("两个操作需要使用不同的快捷键。");
             Replace(binding, selected, persist: true);
             _status("");
         }
@@ -233,46 +417,60 @@ internal sealed class ShortcutEditor : IDisposable
 
     private void Replace(Binding binding, Shortcut shortcut, bool persist)
     {
-        if (binding.RegisteredId != 0 && binding.Value == shortcut) return;
+        if (binding.Active && binding.Value == shortcut) return;
+        if (_bindings.Any(other => other != binding && other.Active && other.Value.Overlaps(shortcut)))
+            throw new InvalidOperationException("两个操作需要使用不同的快捷键。");
         int next = binding.RegisteredId == binding.BaseId ? binding.BaseId + 1 : binding.BaseId;
-        if (!RegisterHotKey(_hwnd, next, shortcut.Modifiers | 0x4000, shortcut.Key))
-            throw new Win32Exception(Marshal.GetLastWin32Error(), $"无法注册{binding.Name}快捷键 {shortcut}，请换一个组合。");
-        try { if (persist) shortcut.Save(binding.Path); }
-        catch
+        bool registered = false;
+        try
         {
-            UnregisterHotKey(_hwnd, next);
-            throw;
+            if (shortcut.NeedsHook) EnsureHooks(shortcut.IsTap);
+            // Windows reserves an entire modifier family. Probe for occupied chords
+            // but leave the opposite side available to applications and to the second binding.
+            bool alreadyOwned = binding.RegisteredId != 0 && binding.Value.Overlaps(shortcut);
+            if (!shortcut.IsTap && !alreadyOwned)
+            {
+                if (!RegisterHotKey(_hwnd, next, shortcut.Modifiers | 0x4000, shortcut.Key))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), $"无法注册{binding.Name}快捷键 {shortcut}，请换一个组合。");
+                registered = true;
+                if (shortcut.NeedsHook)
+                {
+                    UnregisterHotKey(_hwnd, next);
+                    registered = false;
+                }
+            }
+            if (persist) shortcut.Save(binding.Path);
+            if (binding.RegisteredId != 0) UnregisterHotKey(_hwnd, binding.RegisteredId);
+            binding.RegisteredId = registered ? next : 0;
+            binding.Value = shortcut;
+            binding.Active = true;
+            registered = false;
         }
-        if (binding.RegisteredId != 0) UnregisterHotKey(_hwnd, binding.RegisteredId);
-        binding.RegisteredId = next;
-        binding.Value = shortcut;
+        finally
+        {
+            if (registered) UnregisterHotKey(_hwnd, next);
+            ReleaseUnusedHooks();
+        }
     }
 
     private nint Receive(nint hwnd, uint msg, nuint wp, nint lp, nuint id, nuint data)
     {
-        if (msg == WmActivate && (wp & 0xFFFF) == 0 && _editing != null) EndRecording();
+        if (msg == WmActivate && (wp & 0xFFFF) == 0 && _editing != null && !_finishing) EndRecording();
         if (msg == WmHotkey)
         {
             foreach (var binding in _bindings)
             {
                 if (binding.RegisteredId == 0 || wp != (nuint)binding.RegisteredId) continue;
                 if (_editing == null && !_disposed)
-                    binding.Field.DispatcherQueue.TryEnqueue(() => { if (!_disposed && _editing == null) binding.Activate(); });
+                    QueueActivation(binding);
                 return 0;
             }
         }
         return DefSubclassProc(hwnd, msg, wp, lp);
     }
 
-    private static uint ReadModifiers()
-    {
-        uint mods = 0;
-        if (GetAsyncKeyState(0x12) < 0) mods |= 1;
-        if (GetAsyncKeyState(0x11) < 0) mods |= 2;
-        if (GetAsyncKeyState(0x10) < 0) mods |= 4;
-        if (GetAsyncKeyState(0x5B) < 0 || GetAsyncKeyState(0x5C) < 0) mods |= 8;
-        return mods;
-    }
+    private void QueueActivation(Binding binding) =>
+        binding.Field.DispatcherQueue.TryEnqueue(() => { if (!_disposed && _editing == null) binding.Activate(); });
 
     public void Dispose()
     {
@@ -291,13 +489,13 @@ internal sealed class ShortcutEditor : IDisposable
     }
 
     private delegate nint SubclassProc(nint window, uint msg, nuint wp, nint lp, nuint id, nuint data);
-    private delegate nint KeyboardProc(int code, nuint message, nint data);
+    private delegate nint HookProc(int code, nuint message, nint data);
     [DllImport("comctl32.dll")] private static extern bool SetWindowSubclass(nint window, SubclassProc proc, nuint id, nuint data);
     [DllImport("comctl32.dll")] private static extern bool RemoveWindowSubclass(nint window, SubclassProc proc, nuint id);
     [DllImport("comctl32.dll")] private static extern nint DefSubclassProc(nint window, uint msg, nuint wp, nint lp);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(nint window, int id, uint mods, uint key);
     [DllImport("user32.dll")] private static extern bool UnregisterHotKey(nint window, int id);
-    [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowsHookExW(int kind, KeyboardProc proc, nint module, uint thread);
+    [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowsHookExW(int kind, HookProc proc, nint module, uint thread);
     [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(nint hook);
     [DllImport("user32.dll")] private static extern nint CallNextHookEx(nint hook, int code, nuint message, nint data);
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
