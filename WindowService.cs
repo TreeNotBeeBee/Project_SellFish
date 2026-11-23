@@ -21,7 +21,7 @@ public sealed record WindowTarget(nint Handle, uint ProcessId, uint ThreadId, st
 public sealed class WindowService : IDisposable
 {
     private const int GwlExStyle = -20;
-    private const long WsExTopmost = 0x8, WsExToolWindow = 0x80, WsExLayered = 0x80000;
+    private const long WsExTopmost = 0x8, WsExTransparent = 0x20, WsExToolWindow = 0x80, WsExLayered = 0x80000;
     private const uint LwaAlpha = 2;
     private readonly string _journalPath;
     private Snapshot? _snapshot;
@@ -43,6 +43,9 @@ public sealed class WindowService : IDisposable
     public bool IsAlive() => _snapshot != null && SnapshotAlive(_snapshot);
     public bool IsHidden => IsAlive() && !Native.IsWindowVisible(Target!.Handle);
     public bool IsTopmost => IsAlive() && (ReadStyle(Target!.Handle) & WsExTopmost) != 0;
+    public bool CanClickThrough => _snapshot is { } s && (s.OriginallyLayered || s.OpacitySupported);
+    public bool IsClickThrough => _snapshot?.RequestedClickThrough ?? (IsAlive() &&
+        (ReadStyle(Target!.Handle) & (WsExLayered | WsExTransparent)) == (WsExLayered | WsExTransparent));
     public int? Opacity
     {
         get
@@ -92,6 +95,7 @@ public sealed class WindowService : IDisposable
             Marker = "WindowPilot.Managed." + Guid.NewGuid().ToString("N"),
             OriginalTopmost = (style & WsExTopmost) != 0,
             OriginallyLayered = (style & WsExLayered) != 0,
+            OriginallyTransparent = (style & WsExTransparent) != 0,
             OriginalVisible = Native.IsWindowVisible(target.Handle),
             HidePlacement = PlacementData.From(placement),
             OpacitySupported = (GetClassStyle(target.Handle) & 0x60) == 0
@@ -134,26 +138,110 @@ public sealed class WindowService : IDisposable
     public void SetOpacityByte(byte alpha)
     {
         var snapshot = RequireTarget();
-        if (!snapshot.OpacitySupported || Opacity == null)
+        if (!snapshot.OpacitySupported)
             throw new InvalidOperationException("此窗口使用独立绘制表面，无法安全调节不透明度。置顶和隐藏仍可使用。");
-        var hwnd = snapshot.Target.Handle;
-        byte currentAlpha = 255;
-        if ((ReadStyle(hwnd) & WsExLayered) != 0)
+        var hwnd = (nint)snapshot.Identity.Handle;
+        if (!snapshot.OpacityChanged && (ReadStyle(hwnd) & WsExLayered) != 0 &&
+            !Native.GetLayeredWindowAttributes(hwnd, out _, out _, out _))
+            throw new InvalidOperationException("此窗口已切换绘制表面，无法安全调节不透明度。");
+        RecordAppearanceChange(snapshot, changesAlpha: true, changesClickThrough: false);
+        var previous = snapshot.RequestedAlpha;
+        snapshot.RequestedAlpha = alpha;
+        try { ApplyAppearance(snapshot); }
+        catch
         {
-            if (!Native.GetLayeredWindowAttributes(hwnd, out _, out currentAlpha, out var currentFlags))
-                throw new InvalidOperationException("无法安全读取此窗口的原始不透明度。");
-            if ((currentFlags & LwaAlpha) == 0) currentAlpha = 255;
+            snapshot.RequestedAlpha = previous;
+            throw;
         }
-        // Compare raw bytes: original alpha 1 and 254 round to 0% and 100%, respectively.
-        if (currentAlpha == alpha) return;
-        snapshot.OpacityChanged = true;
-        Persist();
-        RequireTarget();
-        var current = ReadStyle(hwnd);
-        if ((current & WsExLayered) == 0) WriteStyle(hwnd, current | WsExLayered);
-        var flags = snapshot.OriginallyLayered ? snapshot.LayeredFlags | LwaAlpha : LwaAlpha;
-        if (!Native.SetLayeredWindowAttributes(hwnd, snapshot.ColorKey, alpha, flags))
-            throw Failure("调节不透明度");
+    }
+
+    public void SetClickThrough(bool enabled)
+    {
+        var snapshot = RequireTarget();
+        if (!CanClickThrough) throw new InvalidOperationException("此窗口的绘制方式不支持鼠标穿透。");
+        RecordAppearanceChange(snapshot, changesAlpha: enabled && !snapshot.OriginallyLayered, changesClickThrough: true);
+        var previous = snapshot.RequestedClickThrough;
+        snapshot.RequestedClickThrough = enabled;
+        try
+        {
+            ApplyAppearance(snapshot);
+            // If click-through supplied the only reason for layering, give back the original
+            // style now. Subsequent ticks should leave the target's own appearance alone.
+            if (!enabled && !snapshot.OriginallyLayered && !snapshot.RequestedAlpha.HasValue)
+                snapshot.RequestedClickThrough = null;
+        }
+        catch
+        {
+            snapshot.RequestedClickThrough = previous;
+            throw;
+        }
+    }
+
+    /// <summary>Repairs changes made by the target during hover/activation. No disk I/O or write when stable.</summary>
+    public void EnforceAppearance()
+    {
+        var snapshot = _snapshot;
+        if (snapshot == null || (!snapshot.RequestedAlpha.HasValue && !snapshot.RequestedClickThrough.HasValue)) return;
+        if (Native.GetProp((nint)snapshot.Identity.Handle, snapshot.Marker) != (nint)1) return;
+        ApplyAppearance(snapshot);
+    }
+
+    private void RecordAppearanceChange(Snapshot snapshot, bool changesAlpha, bool changesClickThrough)
+    {
+        var oldAlphaDirty = snapshot.OpacityChanged;
+        var oldClickDirty = snapshot.ClickThroughChanged;
+        snapshot.OpacityChanged |= changesAlpha;
+        snapshot.ClickThroughChanged |= changesClickThrough;
+        if (oldAlphaDirty == snapshot.OpacityChanged && oldClickDirty == snapshot.ClickThroughChanged) return;
+        try { Persist(); }
+        catch
+        {
+            snapshot.OpacityChanged = oldAlphaDirty;
+            snapshot.ClickThroughChanged = oldClickDirty;
+            throw;
+        }
+    }
+
+    private static void ApplyAppearance(Snapshot snapshot)
+    {
+        var hwnd = (nint)snapshot.Identity.Handle;
+        long style = ReadStyle(hwnd);
+        long desiredStyle = style;
+        byte? alpha = snapshot.RequestedAlpha;
+        bool? pass = snapshot.RequestedClickThrough;
+        if (pass == true || (alpha.HasValue && (alpha < 255 || snapshot.OriginallyLayered)))
+            desiredStyle |= WsExLayered;
+        else if (pass == false && !alpha.HasValue && !snapshot.OriginallyLayered && snapshot.OpacityChanged)
+            desiredStyle &= ~WsExLayered;
+        if (pass.HasValue)
+        {
+            bool keepTransparent = pass.Value || ((desiredStyle & WsExLayered) == 0 && snapshot.OriginallyTransparent);
+            desiredStyle = keepTransparent ? desiredStyle | WsExTransparent : desiredStyle & ~WsExTransparent;
+        }
+
+        bool addingLayer = (style & WsExLayered) == 0 && (desiredStyle & WsExLayered) != 0;
+        if (addingLayer && !snapshot.OpacitySupported)
+            throw new InvalidOperationException("窗口的独立绘制表面发生变化，请释放后重新绑定。");
+        bool applyAlpha = addingLayer;
+        uint flags = snapshot.LayeredFlags | LwaAlpha;
+        uint color = snapshot.ColorKey;
+        byte wanted = alpha ?? ((snapshot.LayeredFlags & LwaAlpha) != 0 ? snapshot.Alpha : (byte)255);
+        if (!addingLayer && alpha.HasValue && (desiredStyle & WsExLayered) != 0)
+        {
+            if (!Native.GetLayeredWindowAttributes(hwnd, out color, out byte actual, out flags))
+                throw new InvalidOperationException("此窗口已切换绘制表面，无法安全调节不透明度。");
+            applyAlpha = (flags & LwaAlpha) == 0 ? wanted < 255 : actual != wanted;
+            flags |= LwaAlpha;
+        }
+        if (style == desiredStyle && !applyAlpha) return;
+        if (!SnapshotAlive(snapshot)) throw new InvalidOperationException("目标窗口已关闭或被替换。");
+        if (style != desiredStyle) WriteStyle(hwnd, desiredStyle);
+        if (applyAlpha && !Native.SetLayeredWindowAttributes(hwnd, color, wanted, flags))
+        {
+            var error = Failure("调节不透明度");
+            if (addingLayer && SnapshotAlive(snapshot)) WriteStyle(hwnd, style);
+            throw error;
+        }
     }
 
     public void SetHidden(bool hidden)
@@ -187,6 +275,8 @@ public sealed class WindowService : IDisposable
             return;
         }
         var errors = new List<string>();
+        snapshot.RequestedAlpha = null;
+        snapshot.RequestedClickThrough = null;
         void RestorePart(Action operation, Action complete)
         {
             try { RequireTarget(); operation(); complete(); }
@@ -197,6 +287,13 @@ public sealed class WindowService : IDisposable
             RestorePart(() => SetVisible(snapshot, snapshot.OriginalVisible), () => snapshot.VisibilityChanged = false);
         if (snapshot.OpacityChanged)
             RestorePart(() => RestoreOpacity(snapshot), () => snapshot.OpacityChanged = false);
+        if (snapshot.ClickThroughChanged)
+            RestorePart(() =>
+            {
+                long style = ReadStyle(snapshot.Target.Handle);
+                long restored = snapshot.OriginallyTransparent ? style | WsExTransparent : style & ~WsExTransparent;
+                if (restored != style) WriteStyle(snapshot.Target.Handle, restored);
+            }, () => snapshot.ClickThroughChanged = false);
         if (snapshot.TopmostChanged)
             RestorePart(() => SetTopmostNative(snapshot.Target, snapshot.OriginalTopmost), () => snapshot.TopmostChanged = false);
         if (errors.Count == 0)
@@ -416,6 +513,10 @@ public sealed class WindowService : IDisposable
         public bool OriginalTopmost { get; set; }
         public bool TopmostChanged { get; set; }
         public bool OriginallyLayered { get; set; }
+        public bool OriginallyTransparent { get; set; }
+        public bool ClickThroughChanged { get; set; }
+        [JsonIgnore] public bool? RequestedClickThrough { get; set; }
+        [JsonIgnore] public byte? RequestedAlpha { get; set; }
         public bool OpacitySupported { get; set; }
         public uint ColorKey { get; set; }
         public byte Alpha { get; set; } = 255;

@@ -1,176 +1,188 @@
-"""Desktop acceptance test using only a disposable target created by this script."""
+"""Interactive acceptance of the compact panel. All bindings and settings are disposable."""
 import ctypes
+from ctypes import wintypes
 import json
 import os
-import pathlib
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
-from ctypes import wintypes
 
 if len(sys.argv) > 1 and sys.argv[1] == "--target":
     import tkinter as tk
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(sys.argv[2])
     root = tk.Tk()
     root.title(sys.argv[2])
-    root.geometry("280x180+16+90")
+    root.geometry("260x140+20+90")
     root.configure(background="#CE2946")
     root.mainloop()
     raise SystemExit
 
-from pywinauto import Desktop
+from pywinauto import Desktop, mouse
+import win32api
+import win32con
+import win32gui
 
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-user32.FindWindowW.restype = wintypes.HWND
-user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-user32.IsWindowVisible.argtypes = [wintypes.HWND]
+u = ctypes.WinDLL("user32", use_last_error=True)
+u.GetLayeredWindowAttributes.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_void_p]
+desktop = Desktop(backend="uia")
 
-def wait(check, label, timeout=18):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        value = check()
-        if value:
+def wait(condition, label, timeout=10):
+    until = time.monotonic() + timeout
+    while time.monotonic() < until:
+        if condition():
             print("PASS", label, flush=True)
-            return value
-        time.sleep(0.15)
-    raise RuntimeError("Timed out: " + label)
-
-target_name = "WindowPilot-Smoke-" + uuid.uuid4().hex[:8]
-if Desktop(backend="win32").windows(title="窗口轻控 · WindowPilot"):
-    raise SystemExit("Close the controller before running this standalone acceptance test.")
-recovery = pathlib.Path(os.environ["LOCALAPPDATA"]) / "WindowPilot" / "recovery.json"
-if recovery.exists() and json.loads(recovery.read_text(encoding="utf-8-sig")) is not None:
-    raise SystemExit("A recovery record exists. Restore that window from the controller first.")
-target_process = subprocess.Popen([sys.executable, __file__, "--target", target_name])
-app = None
-shortcut_path = pathlib.Path(os.environ["LOCALAPPDATA"]) / "WindowPilot" / "shortcut.json"
-fresh_config = not shortcut_path.exists()
-try:
-    target = wait(lambda: user32.FindWindowW(None, target_name), "fixture created")
-    exe = pathlib.Path(sys.argv[1]).resolve()
-    app = subprocess.Popen([str(exe)], cwd=exe.parent)
-    desktop = Desktop(backend="uia")
-    def taskbar_button():
-        taskbar = desktop.window(class_name="Shell_TrayWnd")
-        return any(entry.element_info.automation_id == target_name or target_name in entry.window_text()
-                   for entry in taskbar.descendants(control_type="Button"))
-    surface = desktop.window(process=app.pid, title="窗口轻控 · WindowPilot", class_name="WinUIDesktopWin32WindowClass")
-    surface.wait("visible", timeout=45)
-    combo = surface.child_window(auto_id="TargetBox", control_type="ComboBox").wrapper_object()
-    def bind_fixture():
-        combo.expand()
-        time.sleep(.35)
-        for node in surface.descendants(control_type="ListItem"):
-            if target_name not in node.window_text() or not node.is_visible(): continue
-            rect = node.rectangle()
-            if rect.width() <= 0 or rect.height() <= 0: continue
-            hit = desktop.from_point(rect.mid_point().x, rect.mid_point().y)
-            if hit.element_info.process_id != app.pid: continue
-            node.click_input()
             return
-        raise RuntimeError("Disposable target's list item is not visible in the controller")
-    bind_fixture()
-    vis = surface.child_window(auto_id="VisibilityButton", control_type="Button")
-    wait(lambda: vis.is_enabled(), "bound from dropdown")
-    surface.child_window(auto_id="TopmostBox", control_type="CheckBox").toggle()
-    wait(lambda: user32.GetWindowLongW(target, -20) & 8, "UI topmost")
-    taskbar_visible = taskbar_button()
-    vis.invoke()
-    wait(lambda: not user32.IsWindowVisible(target), "UI hide")
-    if taskbar_visible:
-        wait(lambda: not taskbar_button(), "Explorer removed target's taskbar button")
-    vis.invoke()
-    wait(lambda: user32.IsWindowVisible(target), "UI show")
-    if taskbar_visible:
-        wait(taskbar_button, "Explorer restored target's taskbar button")
-    else:
-        print("Taskbar button not exposed by title on this shell", flush=True)
-    label = surface.child_window(auto_id="ShortcutInfo").window_text()
-    if "Ctrl + Shift + H" in label:
-        import win32api
-        import win32con
-        def press(main=72):
-            for key in [17, 16, main]:
-                win32api.keybd_event(key, 0, 0, 0)
-            for key in [main, 16, 17]:
-                win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
-        press()
-        wait(lambda: not user32.IsWindowVisible(target), "physical global shortcut hides bound target")
-        press()
-        wait(lambda: user32.IsWindowVisible(target), "physical global shortcut restores bound target")
-        if fresh_config:
-            selector = surface.child_window(auto_id="ShortcutKey",control_type="ComboBox").wrapper_object()
-            selector.expand()
-            time.sleep(.3)
-            selector.type_keys("{HOME}" + "{DOWN}"*9 + "{ENTER}", pause=.04)
-            save = surface.child_window(title="保存快捷键", control_type="Button")
-            if not user32.RegisterHotKey(None, 1773, 6, ord("J")):
-                raise RuntimeError("Test shortcut Ctrl+Shift+J already occupied")
-            try:
-                save.invoke()
-                wait(lambda: "无法注册" in surface.child_window(auto_id="StatusText").window_text(), "shortcut conflict reported")
-                press()
-                wait(lambda: not user32.IsWindowVisible(target), "old shortcut survives conflict")
-            finally:
-                user32.UnregisterHotKey(None, 1773)
-            save.invoke()
-            wait(lambda: "Ctrl + Shift + J" in surface.child_window(auto_id="ShortcutInfo").window_text(), "replacement shortcut registered")
-            press(ord("J"))
-            wait(lambda: user32.IsWindowVisible(target), "custom shortcut restores target")
-            saved = json.loads(shortcut_path.read_text(encoding="utf-8-sig"))
-            assert saved["Key"] == ord("J") and saved["Modifiers"] == 6
-            print("PASS custom shortcut persisted", flush=True)
-    else:
-        print("Non-default shortcut active: " + label)
-    zero = surface.child_window(auto_id="ZeroButton", control_type="Button")
-    zero.invoke()
-    def alpha():
-        out = ctypes.c_ubyte()
-        if user32.GetLayeredWindowAttributes(target, None, ctypes.byref(out), None):
-            return out.value
-        return 255
-    wait(lambda: alpha() == 0, "one-click zero opacity")
-    zero.invoke()
-    wait(lambda: alpha() == 255, "one-click previous opacity")
-    def overlay():
-        w = user32.FindWindowW("WindowPilot.EffectOverlay.v1", None)
-        return bool(w and user32.IsWindowVisible(w))
-    surface.child_window(auto_id="InvertBox", control_type="CheckBox").toggle()
-    wait(overlay, "inverted target displayed via controller")
-    surface.child_window(auto_id="GrayBox", control_type="CheckBox").toggle()
-    wait(lambda: alpha() == 1 and overlay(), "combined filters retain hittable source")
-    zero.invoke()
-    wait(lambda: alpha() == 0 and not overlay(), "zero with both filters")
-    zero.invoke()
-    wait(lambda: alpha() == 1 and overlay(), "filters resume after zero")
-    vis.invoke()
-    wait(lambda: not user32.IsWindowVisible(target) and not overlay(), "hide both target and filter")
-    surface.child_window(auto_id="BindAction", control_type="Button").invoke()
-    wait(lambda: user32.IsWindowVisible(target) and not user32.GetWindowLongW(target,-20) & 8, "release restores visibility and topmost")
-    bind_fixture()
-    wait(lambda: vis.is_enabled(), "rebound disposable target")
-    surface.child_window(auto_id="TopmostBox", control_type="CheckBox").toggle()
-    vis.invoke()
-    wait(lambda: not user32.IsWindowVisible(target), "hide before app exit")
-    user32.PostMessageW(surface.handle, 0x10, 0, 0)
-    wait(lambda: app.poll() is not None, "control panel closed normally")
-    wait(lambda: user32.IsWindowVisible(target) and not (user32.GetWindowLongW(target, -20) & 8), "normal exit restores target")
-    print("UI SMOKE PASSED", flush=True)
-finally:
-    if app is not None and app.poll() is None:
-        windows = Desktop(backend="win32").windows(process=app.pid,visible_only=False)
-        for w in windows:
-            if "WindowPilot" in w.window_text():
-                w.post_message(0x0010)
-        try:
-            app.wait(7)
-        except subprocess.TimeoutExpired:
-            app.terminate()
-    target_process.terminate()
-    target_process.wait()
-    if fresh_config and shortcut_path.exists():
-        saved = json.loads(shortcut_path.read_text(encoding="utf-8-sig"))
-        if saved["Key"] == ord("J") and saved["Modifiers"] == 6:
-            shortcut_path.unlink()
+        time.sleep(.1)
+    raise AssertionError(label)
+
+def chord(vk):
+    for key in [17, 18, 16, vk]:
+        win32api.keybd_event(key, 0, 0, 0)
+    for key in [vk, 16, 18, 17]:
+        win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+def write_setting(path, vk):
+    path.write_text(json.dumps({"Modifiers": 7, "Key": vk}), encoding="utf8")
+
+def read_setting(path):
+    return json.loads(path.read_text(encoding="utf-8-sig"))["Key"]
+
+def alpha(hwnd):
+    value = ctypes.c_ubyte()
+    if u.GetLayeredWindowAttributes(hwnd, None, ctypes.byref(value), None): return value.value
+    return 255
+
+def choose(panel, box, text):
+    box.expand()
+    time.sleep(.4)
+    candidates = [n for n in panel.descendants(control_type="ListItem") if text in n.window_text()]
+    for node in reversed(candidates):
+        if not node.is_visible() or node.rectangle().width() < 1: continue
+        pt = node.rectangle().mid_point()
+        hit = desktop.from_point(pt.x, pt.y)
+        if os.environ.get("WINDOWPILOT_TEST_VERBOSE"):
+            print("item", text, node.rectangle(), "hit", hit.element_info.control_type, hit.window_text(), flush=True)
+        if hit.element_info.process_id == panel.element_info.process_id and text in hit.window_text():
+            mouse.click(coords=(pt.x, pt.y))
+            return
+    raise AssertionError("Could not select " + text)
+
+def main(exe):
+    name = "0001-WindowPilot-QA-" + uuid.uuid4().hex[:8]
+    target = subprocess.Popen([sys.executable, __file__, "--target", name])
+    controller = None
+    hwnd = 0
+    try:
+        wait(lambda: win32gui.FindWindow(None, name), "disposable target starts")
+        hwnd = win32gui.FindWindow(None, name)
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp)
+            hide_key, pass_key = profile / "shortcut.json", profile / "passthrough-shortcut.json"
+            keys = []
+            for vk in range(0x70, 0x7b):
+                if u.RegisterHotKey(None, 0x5715, 7, vk):
+                    u.UnregisterHotKey(None, 0x5715)
+                    keys.append(vk)
+                if len(keys) == 4: break
+            assert len(keys) == 4
+            initial_hide, initial_pass, new_hide, new_pass = keys
+            write_setting(hide_key, initial_hide)
+            write_setting(pass_key, initial_pass)
+            (profile / "theme.txt").write_text("light", encoding="utf8")
+            env = {**os.environ, "WINDOWPILOT_PROFILE_DIR": str(profile)}
+            controller = subprocess.Popen([str(exe)], cwd=exe.parent, env=env)
+            spec = desktop.window(process=controller.pid, class_name="WinUIDesktopWin32WindowClass", title="窗口轻控 · WindowPilot")
+            spec.wait("visible", timeout=40)
+            panel = spec.wrapper_object()
+            def control(id):
+                return spec.child_window(auto_id=id, found_index=0).wrapper_object()
+            combo = control("TargetBox")
+            # Drag from a blank point inside the client, not from a control or resize border.
+            x, y = win32gui.ClientToScreen(panel.handle, (9, 14))
+            before = win32gui.GetWindowRect(panel.handle)
+            mouse.press(coords=(x, y))
+            try: mouse.move(coords=(x + 42, y + 35))
+            finally: mouse.release(coords=(x + 42, y + 35))
+            wait(lambda: win32gui.GetWindowRect(panel.handle)[:2] != before[:2], "drag panel by blank background")
+            time.sleep(.15)
+            released = win32gui.GetWindowRect(panel.handle)[:2]
+            mouse.move(coords=(x + 70, y + 50))
+            time.sleep(.15)
+            assert win32gui.GetWindowRect(panel.handle)[:2] == released, "movement must stop on button release"
+            choose(panel, control("ThemeBox"), "黑")
+            wait(lambda: (profile/"theme.txt").read_text(encoding="utf8").strip()=="dark", "black theme persists")
+            choose(panel, control("ThemeBox"), "白")
+            choose(panel, combo, name)
+            hidden = control("HiddenBox")
+            wait(hidden.is_enabled, "target chosen in fixed binding list")
+            control("TopmostBox").toggle()
+            style = lambda: win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            wait(lambda: style() & win32con.WS_EX_TOPMOST, "target placed on top")
+            box = control("OpacityInput")
+            box.set_edit_text("37")
+            wait(lambda: alpha(hwnd)==94, "typed 37 percent")
+            # Mimic a framework resetting its HWND opacity on pointer entry.
+            win32gui.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
+            wait(lambda: alpha(hwnd)==94, "external alpha reset repaired")
+            press_box = control("ClickThroughBox")
+            press_box.toggle()
+            wait(lambda: style() & win32con.WS_EX_TRANSPARENT and alpha(hwnd)==94, "through plus opacity")
+            chord(initial_pass)
+            wait(lambda: not (style() & win32con.WS_EX_TRANSPARENT), "initial passthrough hotkey")
+            control("InvertBox").toggle()
+            control("GrayBox").toggle()
+            wait(lambda: alpha(hwnd)==1, "both filters active")
+            control("ZeroButton").invoke()
+            wait(lambda: alpha(hwnd)==0, "zero across both filters")
+            control("ZeroButton").invoke()
+            wait(lambda: alpha(hwnd)==1, "restore filters after zero")
+            # Test the recorder with real keys, including another registered shortcut.
+            hide_field = control("HideShortcutBox")
+            hide_field.click_input()
+            wait(lambda: hide_field.get_value()=="", "click clears shortcut editor")
+            chord(initial_pass)
+            time.sleep(.15)
+            assert read_setting(hide_key) == initial_hide and not (style() & win32con.WS_EX_TRANSPARENT)
+            hide_field.click_input()
+            chord(new_hide)
+            wait(lambda: read_setting(hide_key)==new_hide, "record hide shortcut and auto-save")
+            assert win32gui.IsWindowVisible(hwnd)
+            pass_field = control("ThroughShortcutBox")
+            pass_field.click_input()
+            chord(new_pass)
+            wait(lambda: read_setting(pass_key)==new_pass, "record passthrough shortcut and auto-save")
+            chord(new_pass)
+            wait(lambda: style() & win32con.WS_EX_TRANSPARENT, "custom through shortcut with filters")
+            def taskbar_entry():
+                taskbar = desktop.window(class_name="Shell_TrayWnd")
+                return any(n.element_info.automation_id == name or name in n.window_text()
+                           for n in taskbar.descendants(control_type="Button"))
+            had_entry = taskbar_entry()
+            chord(new_hide)
+            wait(lambda: not win32gui.IsWindowVisible(hwnd), "custom shortcut hides the actual window")
+            if had_entry: wait(lambda: not taskbar_entry(), "Explorer removed the taskbar button")
+            chord(new_hide)
+            wait(lambda: win32gui.IsWindowVisible(hwnd), "custom shortcut restores the actual window")
+            if had_entry: wait(taskbar_entry, "Explorer restored the taskbar button")
+            choose(panel, combo, "释放")
+            wait(lambda: alpha(hwnd)==255 and not (style() & (8|0x20|0x80000)), "release restores native window styles")
+            choose(panel, combo, name)
+            press_box.toggle()
+            hidden.toggle()
+            win32gui.PostMessage(panel.handle, win32con.WM_CLOSE, 0, 0)
+            wait(lambda: controller.poll() is not None, "close compact panel")
+            wait(lambda: win32gui.IsWindowVisible(hwnd) and not (style() & (8|0x20|0x80000)), "exit restores hidden mouse-transparent target")
+    finally:
+        if controller is not None and controller.poll() is None:
+            for w in Desktop(backend="win32").windows(process=controller.pid, visible_only=False):
+                if w.class_name()=="WinUIDesktopWin32WindowClass": w.post_message(win32con.WM_CLOSE)
+            try: controller.wait(timeout=5)
+            except subprocess.TimeoutExpired: controller.terminate()
+        target.terminate()
+        target.wait()
+
+if __name__ == "__main__":
+    main(Path(sys.argv[1]).resolve())

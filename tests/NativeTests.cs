@@ -11,6 +11,7 @@ internal static class NativeTests
     private static readonly List<string> Skipped = [];
     private static readonly Dictionary<string, string[]> Taskbar = [];
     private static readonly Native.WndProc WindowProc = Procedure;
+    private static int _resetOnHover, _clicks;
 
     [STAThread]
     private static int Main(string[] args)
@@ -49,6 +50,7 @@ internal static class NativeTests
             Check(Alpha(hwndA) == 0, "rounded zero percent still updates byte one to zero");
             service.SetOpacity(100);
             Check(Alpha(hwndA) == 255, "full opacity is exact byte 255");
+            TestPointerBehavior(service, hwndA, hwndB, journal);
 
             var placement = Placement(hwndA);
             Taskbar["beforeHide"] = AwaitTaskbar(2);
@@ -88,6 +90,23 @@ internal static class NativeTests
             service.Release();
             Check(service.Target == null, "release removes binding");
 
+            service.Bind(a);
+            service.SetClickThrough(true);
+            Check(service.IsClickThrough && Alpha(hwndA) == 255, "opaque target can pass clicks without changing its brightness");
+            service.SetClickThrough(false);
+            Check(Native.GetWindowLongPtr(hwndA, -20) == (nint)originalStyle,
+                "disabling click-through alone removes the added layered style");
+            service.Release();
+
+            Native.SetWindowLongPtr(hwndA, -20, (nint)(originalStyle | 0x80020));
+            Native.SetLayeredWindowAttributes(hwndA, 0x00FF00, 77, 3);
+            service.Bind(a); service.SetClickThrough(false);
+            Check(!service.IsClickThrough && Alpha(hwndA) == 77, "originally click-through target can be made hittable temporarily");
+            service.Release();
+            Check(Native.GetWindowLongPtr(hwndA, -20) == (nint)(originalStyle | 0x80020) && Alpha(hwndA) == 77,
+                "release recovers originally click-through layered window");
+            Native.SetWindowLongPtr(hwndA, -20, (nint)originalStyle);
+
             Native.SetWindowLongPtr(hwndA, -20, (nint)(originalStyle | 0x80000));
             Native.SetLayeredWindowAttributes(hwndA, 0x00FF00, 1, 3);
             service.Bind(a); service.SetOpacity(0);
@@ -102,7 +121,7 @@ internal static class NativeTests
             Check(Alpha(hwndA) == 254, "release restores original alpha byte 254");
             Native.SetWindowLongPtr(hwndA, -20, (nint)originalStyle);
 
-            service.Bind(a); service.SetTopmost(true); service.SetOpacity(0); service.SetHidden(true);
+            service.Bind(a); service.SetTopmost(true); service.SetOpacity(0); service.SetClickThrough(true); service.SetHidden(true);
             using (var recovered = new WindowService(journal))
                 Check(recovered.Target == null && Native.IsWindowVisible(hwndA)
                     && Native.GetWindowLongPtr(hwndA, -20).ToInt64() == originalStyle,
@@ -123,7 +142,12 @@ internal static class NativeTests
             service.Bind(b);
             Check(service.Opacity == null, "unreadable layered surface rejects opacity changes");
             ExpectError(() => service.SetOpacity(50), "unsupported layered surface remains unmodified");
+            service.SetClickThrough(true);
+            Check(service.IsClickThrough && !Native.GetLayeredWindowAttributes(hwndB, out _, out _, out _),
+                "per-pixel window accepts click-through without changing its rendering API");
             service.Release();
+            Check(Native.GetWindowLongPtr(hwndB, -20) == (nint)(originalStyleB | 0x80000),
+                "per-pixel surface recovers original style after click-through");
             Native.SetWindowLongPtr(hwndB, -20, (nint)originalStyleB);
 
             service.Bind(a);
@@ -179,6 +203,63 @@ internal static class NativeTests
     {
         if (!Native.GetLayeredWindowAttributes(hwnd, out _, out var alpha, out _)) throw new InvalidOperationException("Cannot read native alpha");
         return alpha;
+    }
+
+    private static void TestPointerBehavior(WindowService service, nint upper, nint lower, string journal)
+    {
+        const int x = 340, y = 280;
+        var point = new Native.Point { X = x, Y = y };
+        Native.GetCursorPos(out var saved);
+        try
+        {
+            // Topmost order and identical rectangles are restricted to our two child processes.
+            Native.SetWindowPos(lower, -1, 180, 180, 480, 240, 0x10);
+            service.SetTopmost(true);
+            Wait(() => Native.WindowFromPoint(point) == upper);
+            Native.SetCursorPos(x - 5, y);
+            service.SetOpacity(38);
+            Native.SendMessage(upper, 0x8041, 1, 0);
+            Native.SetCursorPos(x, y);
+            Wait(() => Alpha(upper) == 255);
+            var savedWrite = File.GetLastWriteTimeUtc(journal);
+            service.EnforceAppearance();
+            Check(Alpha(upper) == 97, "real mouse entry resetting alpha is repaired to the requested 38%");
+            service.EnforceAppearance();
+            Check(File.GetLastWriteTimeUtc(journal) == savedWrite, "hover repair and stable refresh perform no journal writes");
+
+            Native.SendMessage(upper, 0x8041, 2, 0);
+            Native.SetCursorPos(x + 1, y);
+            Wait(() => (Native.GetWindowLongPtr(upper, -20).ToInt64() & 0x80000) == 0);
+            service.EnforceAppearance();
+            Check(Alpha(upper) == 97, "real mouse movement removing layered style is repaired");
+            Native.SendMessage(upper, 0x8041, 0, 0);
+
+            service.SetClickThrough(true);
+            Wait(() => Native.WindowFromPoint(point) == lower);
+            Check(Alpha(upper) == 97, "click-through preserves visible source opacity");
+            Native.SetCursorPos(x, y);
+            if (Native.WindowFromPoint(point) != lower) throw new InvalidOperationException("Test click target changed.");
+            var input = new[] { Native.MouseInput(2), Native.MouseInput(4) };
+            Check(Native.SendInput(2, input, Marshal.SizeOf<Native.Input>()) == 2, "physical button input submitted on the test pair");
+            Wait(() => Native.SendMessage(lower, 0x8042, 0, 0) == 1);
+            Check(Native.SendMessage(upper, 0x8042, 0, 0) == 0, "real click reached lower window only");
+
+            // Restore the stacking order after the click activates our lower window.
+            Native.SetWindowPos(upper, -1, 180, 180, 480, 240, 0x10);
+            Native.SetWindowLongPtr(upper, -20, Native.GetWindowLongPtr(upper, -20) & ~(nint)0x20);
+            service.EnforceAppearance();
+            Check((Native.GetWindowLongPtr(upper, -20) & 0x20) != 0, "lost click-through flag is repaired");
+            service.SetClickThrough(false);
+            Wait(() => Native.WindowFromPoint(point) == upper);
+            Check(Alpha(upper) == 97, "turning click-through off restores hit testing and preserves opacity");
+        }
+        finally
+        {
+            Native.SendMessage(upper, 0x8041, 0, 0);
+            Native.SetWindowPos(lower, -2, 0, 0, 0, 0, 0x13);
+            service.SetTopmost(false);
+            Native.SetCursorPos(saved.X, saved.Y);
+        }
     }
     private static void MakePerPixelSurface(nint hwnd)
     {
@@ -257,6 +338,15 @@ internal static class NativeTests
     }
     private static nint Procedure(nint hwnd, uint message, nint wParam, nint lParam)
     {
+        if (message == 0x8041) { _resetOnHover = (int)wParam; return 0; }
+        if (message == 0x8042) return _clicks;
+        if (message == 0x201) _clicks++;
+        if (message == 0x200 && _resetOnHover != 0)
+        {
+            if (_resetOnHover == 1) Native.SetLayeredWindowAttributes(hwnd, 0, 255, 2);
+            else Native.SetWindowLongPtr(hwnd, -20, Native.GetWindowLongPtr(hwnd, -20) & ~(nint)0x80000);
+            _resetOnHover = 0;
+        }
         if (message == 0x8040) { Thread.Sleep(4000); return 0; }
         if (message == 0x113) { Native.DestroyWindow(hwnd); return 0; }
         if (message == 2) { Native.PostQuitMessage(0); return 0; }
@@ -276,6 +366,18 @@ internal static class NativeTests
         { public uint Size, Style; public nint Procedure; public int ClassExtra, WindowExtra; public nint Instance, Icon, Cursor, Background;
             public string? MenuName; public string ClassName; public nint SmallIcon; }
         [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; }
+        [StructLayout(LayoutKind.Sequential)] internal struct Input
+        {
+            public uint Type;
+            public Mouse Event;
+        }
+        [StructLayout(LayoutKind.Sequential)] internal struct Mouse
+        {
+            public int X, Y;
+            public uint MouseData, Flags, Time;
+            public nuint ExtraInfo;
+        }
+        internal static Input MouseInput(uint flags) => new() { Event = new Mouse { Flags = flags } };
         [StructLayout(LayoutKind.Sequential)] internal struct Rect { public int Left, Top, Right, Bottom; }
         [StructLayout(LayoutKind.Sequential)] internal struct BitmapInfo
         { public uint Size; public int Width, Height; public ushort Planes, BitCount; public uint Compression, SizeImage;
@@ -299,6 +401,12 @@ internal static class NativeTests
         [DllImport("user32.dll")] internal static extern bool PostMessage(nint hwnd, uint message, nint wParam, nint lParam);
         [DllImport("user32.dll")] internal static extern nuint SetTimer(nint hwnd, nuint id, uint timeout, nint callback);
         [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+        [DllImport("user32.dll")] internal static extern bool GetCursorPos(out Point point);
+        [DllImport("user32.dll")] internal static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")] internal static extern nint WindowFromPoint(Point point);
+        [DllImport("user32.dll")] internal static extern nint SendMessage(nint hwnd, uint message, nint wParam, nint lParam);
+        [DllImport("user32.dll")] internal static extern bool SetWindowPos(nint hwnd, nint after, int x, int y, int width, int height, uint flags);
+        [DllImport("user32.dll")] internal static extern uint SendInput(uint count, [In] Input[] events, int size);
         [DllImport("user32.dll")] internal static extern nint GetWindowLongPtr(nint hwnd, int index);
         [DllImport("user32.dll")] internal static extern nint SetWindowLongPtr(nint hwnd, int index, nint value);
         [DllImport("user32.dll")] internal static extern bool GetLayeredWindowAttributes(nint hwnd, out uint color, out byte alpha, out uint flags);

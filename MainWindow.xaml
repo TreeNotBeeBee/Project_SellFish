@@ -4,69 +4,109 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="窗口轻控 · WindowPilot">
     <Grid x:Name="Root" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-            <StackPanel Margin="24,18,24,18" MaxWidth="760" Spacing="16" HorizontalAlignment="Stretch">
-                <Grid ColumnSpacing="12">
+        <Grid.Resources>
+            <Style x:Key="PanelCheckBox" TargetType="CheckBox">
+                <Setter Property="MinWidth" Value="0"/>
+                <Setter Property="MinHeight" Value="32"/>
+                <Setter Property="Padding" Value="6,0,0,0"/>
+                <Setter Property="HorizontalAlignment" Value="Left"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+            </Style>
+            <Style x:Key="FieldLabel" TargetType="TextBlock">
+                <Setter Property="VerticalAlignment" Value="Center"/>
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </Style>
+            <Style x:Key="ShortcutField" TargetType="TextBox">
+                <Setter Property="IsReadOnly" Value="True"/>
+                <Setter Property="IsSpellCheckEnabled" Value="False"/>
+                <Setter Property="IsTextPredictionEnabled" Value="False"/>
+                <Setter Property="FontSize" Value="13"/>
+                <Setter Property="Padding" Value="8,4"/>
+                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                <Setter Property="VerticalContentAlignment" Value="Center"/>
+            </Style>
+        </Grid.Resources>
+        <Grid x:Name="PanelContent" Margin="16,12" RowSpacing="9" VerticalAlignment="Center">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid ColumnSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ComboBox x:Name="TargetBox" HorizontalAlignment="Stretch" MinWidth="90" MaxDropDownHeight="340"
+                          PlaceholderText="选择要绑定的窗口" DisplayMemberPath="Display"
+                          AutomationProperties.AutomationId="TargetBox" AutomationProperties.Name="绑定窗口"
+                          SelectionChanged="SelectTarget"/>
+                <CheckBox x:Name="TopmostBox" Grid.Column="1" AutomationProperties.AutomationId="TopmostBox"
+                          Style="{StaticResource PanelCheckBox}" Content="始终置顶" Click="ChangeTopmost"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="7">
+                    <TextBlock Text="主题" Style="{StaticResource FieldLabel}"/>
+                    <ComboBox x:Name="ThemeBox" Width="65" AutomationProperties.AutomationId="ThemeBox" AutomationProperties.Name="主题">
+                        <ComboBoxItem Content="白"/>
+                        <ComboBoxItem Content="黑"/>
+                    </ComboBox>
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1" ColumnSpacing="9">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="不透明度" Style="{StaticResource FieldLabel}"/>
+                <TextBox x:Name="OpacityInput" Grid.Column="1" Width="72" Text="100" MaxLength="3" InputScope="Number"
+                         HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="6,4"
+                         IsSpellCheckEnabled="False" IsTextPredictionEnabled="False"
+                         AutomationProperties.AutomationId="OpacityInput" AutomationProperties.Name="不透明度百分比"
+                         ToolTipService.ToolTip="输入 0 到 100，按 Enter 或离开输入框生效" LostFocus="CommitOpacity" KeyDown="OpacityInputKeyDown"/>
+                <TextBlock Grid.Column="2" Text="%" Style="{StaticResource FieldLabel}"/>
+                <Button x:Name="ZeroButton" Grid.Column="3" MinWidth="40" Padding="6,3" Content="0%"
+                        AutomationProperties.AutomationId="ZeroButton" AutomationProperties.Name="切换全透明"
+                        ToolTipService.ToolTip="切换到完全透明，再点一次恢复上次数值" Click="ToggleZero"/>
+                <CheckBox x:Name="InvertBox" Grid.Column="5" Content="反色" Style="{StaticResource PanelCheckBox}"
+                          AutomationProperties.AutomationId="InvertBox" Click="ChangeFilters"/>
+                <CheckBox x:Name="GrayBox" Grid.Column="6" Content="灰度" Margin="6,0,0,0" Style="{StaticResource PanelCheckBox}"
+                          AutomationProperties.AutomationId="GrayBox" Click="ChangeFilters"/>
+            </Grid>
+
+            <Grid Grid.Row="2" ColumnSpacing="20">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <FontIcon Glyph="&#xE91B;" FontSize="26" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
-                    <TextBlock Grid.Column="1" Text="窗口轻控" Style="{ThemeResource TitleTextBlockStyle}"/>
+                    <CheckBox x:Name="HiddenBox" Content="隐藏" Style="{StaticResource PanelCheckBox}"
+                              AutomationProperties.AutomationId="HiddenBox" Click="ToggleHidden"/>
+                    <TextBox x:Name="HideShortcutBox" Grid.Column="1" Style="{StaticResource ShortcutField}"
+                             AutomationProperties.AutomationId="HideShortcutBox" AutomationProperties.Name="隐藏快捷键"/>
                 </Grid>
-                <StackPanel Spacing="8">
-                    <TextBlock Text="绑定窗口" Style="{ThemeResource SubtitleTextBlockStyle}"/>
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <ComboBox x:Name="TargetBox" AutomationProperties.AutomationId="TargetBox" AutomationProperties.Name="选择要绑定的窗口" PlaceholderText="选择一个正在运行的窗口" DisplayMemberPath="Display" HorizontalAlignment="Stretch" SelectionChanged="SelectTarget" MaxDropDownHeight="340"/>
-                        <Button Grid.Column="1" x:Name="BindAction" Content="刷新" Click="RefreshOrRelease"/>
-                    </Grid>
-                    <TextBlock x:Name="BindingInfo" Text="选定后，控件和快捷键将固定作用于该窗口。" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}"/>
-                </StackPanel>
-                <UserControl x:Name="TargetActions" IsEnabled="False" HorizontalContentAlignment="Stretch">
-                <StackPanel Spacing="12">
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <Button x:Name="VisibilityButton" AutomationProperties.AutomationId="VisibilityButton" Content="隐藏窗口" Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Stretch" Click="ToggleHidden"/>
-                        <CheckBox Grid.Column="1" x:Name="TopmostBox" AutomationProperties.AutomationId="TopmostBox" Content="始终置顶" Click="ChangeTopmost"/>
-                    </Grid>
-                    <Border BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4"/>
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="不透明度" VerticalAlignment="Center" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                        <TextBlock Grid.Column="1" x:Name="OpacityValue" VerticalAlignment="Center" Text="100%"/>
-                    </Grid>
-                    <Grid ColumnSpacing="14">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <Slider x:Name="OpacitySlider" AutomationProperties.Name="窗口不透明度" Minimum="0" Maximum="100" Value="100" StepFrequency="1" SmallChange="1" LargeChange="10" ValueChanged="ChangeOpacity"/>
-                        <Button x:Name="ZeroButton" Grid.Column="1" Content="一键全透明" Click="ToggleZero"/>
-                    </Grid>
-                    <StackPanel Orientation="Horizontal" Spacing="22">
-                        <CheckBox x:Name="InvertBox" AutomationProperties.AutomationId="InvertBox" Content="反色" Click="ChangeFilters"/>
-                        <CheckBox x:Name="GrayBox" AutomationProperties.AutomationId="GrayBox" Content="灰度" Click="ChangeFilters"/>
-                    </StackPanel>
-                </StackPanel>
-                </UserControl>
-                <Border BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"/>
-                <StackPanel Spacing="8">
-                    <TextBlock Text="隐藏 / 显示快捷键" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <CheckBox x:Name="CtrlKey" MinWidth="0" Content="Ctrl" IsChecked="True"/>
-                        <CheckBox x:Name="AltKey" MinWidth="0" Content="Alt"/>
-                        <CheckBox x:Name="ShiftKey" MinWidth="0" Content="Shift" IsChecked="True"/>
-                        <CheckBox x:Name="WinKey" MinWidth="0" Content="Win"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <ComboBox x:Name="ShortcutKey" AutomationProperties.Name="快捷键主键" MinWidth="96"/>
-                        <Button Content="保存快捷键" Click="SaveHotkey"/>
-                    </StackPanel>
-                    <TextBlock x:Name="ShortcutInfo" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}"/>
-                </StackPanel>
-            </StackPanel>
-        </ScrollViewer>
-        <Border Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Padding="24,10">
-            <TextBlock x:Name="StatusText" Text="请选择窗口。" TextWrapping="Wrap" IsTextSelectionEnabled="True" AutomationProperties.LiveSetting="Polite"/>
-        </Border>
+                <Grid Grid.Column="1" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <CheckBox x:Name="ClickThroughBox" Content="页面穿透" Style="{StaticResource PanelCheckBox}"
+                              ToolTipService.ToolTip="鼠标直接操作目标窗口下方的窗口"
+                              AutomationProperties.AutomationId="ClickThroughBox" Click="ToggleClickThrough"/>
+                    <TextBox x:Name="ThroughShortcutBox" Grid.Column="1" Style="{StaticResource ShortcutField}"
+                             AutomationProperties.AutomationId="ThroughShortcutBox" AutomationProperties.Name="页面穿透快捷键"/>
+                </Grid>
+            </Grid>
+
+            <TextBlock x:Name="StatusText" Grid.Row="3" Visibility="Collapsed" TextWrapping="Wrap"
+                       MaxLines="2" TextTrimming="CharacterEllipsis" Style="{ThemeResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       AutomationProperties.AutomationId="StatusText" AutomationProperties.LiveSetting="Polite"/>
+        </Grid>
     </Grid>
 </Window>

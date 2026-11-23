@@ -1,109 +1,161 @@
-using System;
-using System.Linq;
-using System.Runtime.InteropServices;
+using System.Globalization;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
-using Windows.Graphics;
+using Microsoft.UI.Xaml.Input;
+using VirtualKey = Windows.System.VirtualKey;
 using WinRT.Interop;
 
 namespace WindowPilot;
 
+public sealed record TargetChoice(string Display, WindowTarget? Target);
+
 public sealed partial class MainWindow : Window
 {
-    private readonly WindowService _windows = new();
+    private readonly WindowService _windows = new(Path.Combine(AppProfile.DirectoryPath, "recovery.json"));
     private readonly EffectSession _effects = new();
-    private readonly DispatcherQueueTimer _poll;
-    private readonly DispatcherQueueTimer _opacityDelay;
-    private GlobalShortcut? _hotkey;
-    private bool _ready;
-    private bool _updating;
+    private readonly DispatcherQueueTimer _refresh;
+    private readonly DispatcherQueueTimer _guard;
+    private readonly DispatcherQueueTimer _typing;
+    private readonly CompactWindow _panel;
+    private ShortcutEditor? _shortcuts;
     private int _requestedOpacity = 100;
     private int _previousOpacity = 100;
     private bool _invert;
     private bool _gray;
+    private bool _updating;
+    private bool _ready;
+    private bool _writeOpacityText;
+    private long _retryGuardAt;
 
     public MainWindow()
     {
         InitializeComponent();
-        nint hwnd = WindowNative.GetWindowHandle(this);
-        double scale = Math.Max(1, GetDpiForWindow(hwnd) / 96.0);
-        var display = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
-        AppWindow.Resize(new SizeInt32(
-            Math.Min((int)(550 * scale), display.WorkArea.Width),
-            Math.Min((int)(700 * scale), display.WorkArea.Height)));
-        _opacityDelay = DispatcherQueue.CreateTimer();
-        _opacityDelay.Interval = TimeSpan.FromMilliseconds(55);
-        _opacityDelay.IsRepeating = false;
-        _opacityDelay.Tick += (_, _) => Run(() => SetRequestedOpacity((int)Math.Round(OpacitySlider.Value)));
-        _poll = DispatcherQueue.CreateTimer();
-        _poll.Interval = TimeSpan.FromSeconds(2);
-        _poll.Tick += (_, _) => Run(CheckWindow);
+        _panel = new CompactWindow(this, Root, ThemeBox, StatusText);
+        _typing = DispatcherQueue.CreateTimer();
+        _typing.Interval = TimeSpan.FromMilliseconds(320);
+        _typing.IsRepeating = false;
+        _typing.Tick += (_, _) => Run(() => CommitNumber(finalize: false));
+        OpacityInput.TextChanged += (_, _) =>
+        {
+            if (!_ready || _updating || _writeOpacityText || _windows.Target == null) return;
+            _typing.Stop();
+            _typing.Start();
+        };
+
+        _refresh = DispatcherQueue.CreateTimer();
+        _refresh.Interval = TimeSpan.FromSeconds(2);
+        _refresh.Tick += (_, _) => Run(RefreshState);
+        _guard = DispatcherQueue.CreateTimer();
+        _guard.Interval = TimeSpan.FromMilliseconds(80);
+        _guard.Tick += (_, _) => GuardTargetAppearance();
         _effects.Failed += HandleEffectFailure;
+        try
+        {
+            _shortcuts = new ShortcutEditor(WindowNative.GetWindowHandle(this), HideShortcutBox,
+                ThroughShortcutBox, () => Run(SwitchVisibility), () => Run(SwitchThrough), Status);
+        }
+        catch (Exception ex) { Status(ex.Message); }
         AppWindow.Closing += ClosingWindow;
         Closed += (_, _) =>
         {
-            _poll.Stop();
-            _opacityDelay.Stop();
-            _hotkey?.Dispose();
+            _ready = false;
+            _refresh.Stop();
+            _guard.Stop();
+            _typing.Stop();
+            _shortcuts?.Dispose();
             _effects.Dispose();
+            _panel.Dispose();
+            // Closing a WinUI window programmatically may bypass AppWindow.Closing.
+            try { _windows.Release(); } catch { /* A pending recovery is retained on disk. */ }
         };
-        var chosen = Shortcut.Load();
-        ShortcutKey.ItemsSource = Shortcut.Keys;
-        ShortcutKey.SelectedItem = chosen.KeyName;
-        CtrlKey.IsChecked = (chosen.Modifiers & 2) != 0;
-        AltKey.IsChecked = (chosen.Modifiers & 1) != 0;
-        ShiftKey.IsChecked = (chosen.Modifiers & 4) != 0;
-        WinKey.IsChecked = (chosen.Modifiers & 8) != 0;
-        try
-        {
-            _hotkey = new GlobalShortcut(hwnd, () => DispatcherQueue.TryEnqueue(() => Run(SwitchVisibility)));
-            _hotkey.Register(chosen);
-        }
-        catch (Exception ex) { StatusText.Text = ex.Message; }
-        UpdateShortcutLabel();
-        if (_windows.RecoveryWarning is { } warning)
-            StatusText.Text = "上次的窗口恢复需要处理：" + warning;
         _ready = true;
-        Run(RefreshList);
-        _poll.Start();
+        if (_windows.Target is { } previous)
+            ShowBoundChoice(previous);
+        Run(RefreshState);
+        SyncControls();
+        if (_windows.RecoveryWarning is { } warning) Status(warning);
+        _refresh.Start();
+        _guard.Start();
     }
+
+    private void Status(string message) => StatusText.Text = message;
 
     private void Run(Action action)
     {
         try { action(); }
-        catch (Exception error) { StatusText.Text = error.Message; }
+        catch (Exception ex) { Status(ex.Message); }
+    }
+
+    private void GuardTargetAppearance()
+    {
+        if (_windows.Target == null || Environment.TickCount64 < _retryGuardAt) return;
+        try { _windows.EnforceAppearance(); }
+        catch (Exception ex)
+        {
+            _retryGuardAt = Environment.TickCount64 + 1500;
+            Status(ex.Message);
+        }
+    }
+
+    private void RefreshState()
+    {
+        if (_windows.Target == null)
+        {
+            RefreshList();
+            return;
+        }
+        if (!_windows.IsAlive())
+        {
+            Release();
+            Status("目标窗口已关闭，请重新选择。");
+            return;
+        }
+        SyncControls();
     }
 
     private void RefreshList()
     {
-        if (_windows.Target != null || TargetBox.IsDropDownOpen) return;
-        var items = _windows.Enumerate().OrderBy(w => w.Display, StringComparer.CurrentCultureIgnoreCase).ToList();
-        TargetBox.ItemsSource = items;
-        BindingInfo.Text = $"检测到 {items.Count} 个窗口。选定后固定绑定，释放时复原。";
+        if (TargetBox.IsDropDownOpen || _windows.Target != null) return;
+        var choices = _windows.Enumerate()
+            .OrderBy(w => w.Display, StringComparer.CurrentCultureIgnoreCase)
+            .Select(w => new TargetChoice(w.Display, w)).ToList();
+        if (TargetBox.ItemsSource is List<TargetChoice> old && old.SequenceEqual(choices)) return;
+        _updating = true;
+        try { TargetBox.ItemsSource = choices; }
+        finally { _updating = false; }
     }
 
-    private void CheckWindow()
+    private void ShowBoundChoice(WindowTarget target)
     {
-        if (_windows.Target == null) { RefreshList(); return; }
-        if (!_windows.IsAlive()) { Release(); StatusText.Text = "绑定的窗口已关闭，可以选择其他窗口。"; return; }
-        SyncControls();
+        var bound = new TargetChoice(target.Display, target);
+        _updating = true;
+        try
+        {
+            TargetBox.ItemsSource = new[] { bound, new TargetChoice("释放并恢复窗口", null) };
+            TargetBox.SelectedItem = bound;
+        }
+        finally { _updating = false; }
     }
 
     private void SelectTarget(object sender, SelectionChangedEventArgs e)
     {
-        if (!_ready || _updating || _windows.Target != null || TargetBox.SelectedItem is not WindowTarget target) return;
+        if (!_ready || _updating || TargetBox.SelectedItem is not TargetChoice choice) return;
         Run(() =>
         {
-            try { _windows.Bind(target); }
+            if (choice.Target == null) { Release(); return; }
+            if (_windows.Target != null) return;
+            try { _windows.Bind(choice.Target); }
             catch { TargetBox.SelectedIndex = -1; throw; }
             _requestedOpacity = _windows.Opacity ?? 100;
             _previousOpacity = _requestedOpacity > 0 ? _requestedOpacity : 100;
             _invert = _gray = false;
+            _retryGuardAt = 0;
+            ShowBoundChoice(choice.Target);
+            ShowOpacityNumber();
             SyncControls();
-            StatusText.Text = "已绑定 " + target.Title;
+            Status("");
         });
     }
 
@@ -113,50 +165,40 @@ public sealed partial class MainWindow : Window
         try
         {
             bool bound = _windows.Target != null;
-            TargetBox.IsEnabled = !bound;
-            BindAction.Content = bound ? "释放" : "刷新";
-            TargetActions.IsEnabled = bound;
-            if (!bound) return;
-            TopmostBox.IsChecked = _windows.IsTopmost;
-            VisibilityButton.Content = _windows.IsHidden ? "显示窗口" : "隐藏窗口";
-            BindingInfo.Text = _windows.IsHidden ? "已隐藏 · 任务栏中的窗口按钮已收起" : "已绑定 · 释放将恢复绑定前的状态";
-            bool supported = _windows.Opacity.HasValue;
-            OpacitySlider.IsEnabled = ZeroButton.IsEnabled = InvertBox.IsEnabled = GrayBox.IsEnabled = supported;
+            HiddenBox.IsEnabled = TopmostBox.IsEnabled = bound;
+            HiddenBox.IsChecked = bound && _windows.IsHidden;
+            TopmostBox.IsChecked = bound && _windows.IsTopmost;
+            ClickThroughBox.IsEnabled = bound && _windows.CanClickThrough;
+            ClickThroughBox.IsChecked = bound && _windows.IsClickThrough;
+            bool supported = bound && _windows.Opacity.HasValue;
+            OpacityInput.IsEnabled = ZeroButton.IsEnabled = InvertBox.IsEnabled = GrayBox.IsEnabled = supported;
             InvertBox.IsChecked = _invert;
             GrayBox.IsChecked = _gray;
-            if (!_opacityDelay.IsRunning)
-            {
-                OpacitySlider.Value = _requestedOpacity;
-                OpacityValue.Text = supported ? $"{_requestedOpacity}%" : "窗口不支持透明度";
-            }
-            ZeroButton.Content = _requestedOpacity == 0 ? $"回到 {_previousOpacity}%" : "一键全透明";
+            ZeroButton.Content = _requestedOpacity == 0 ? $"{_previousOpacity}%" : "0%";
         }
         finally { _updating = false; }
     }
 
-    private void RefreshOrRelease(object sender, RoutedEventArgs e) => Run(() =>
+    private void ShowOpacityNumber()
     {
-        if (_windows.Target == null) RefreshList(); else Release();
-    });
+        _writeOpacityText = true;
+        try { OpacityInput.Text = _requestedOpacity.ToString(CultureInfo.InvariantCulture); }
+        finally { _writeOpacityText = false; }
+    }
 
     private void Release()
     {
-        _opacityDelay.Stop();
+        _typing.Stop();
         _effects.Stop();
         _windows.Release();
         _invert = _gray = false;
         _requestedOpacity = _previousOpacity = 100;
-        _updating = true;
-        TargetBox.SelectedIndex = -1;
-        InvertBox.IsChecked = GrayBox.IsChecked = TopmostBox.IsChecked = false;
-        VisibilityButton.Content = "隐藏窗口";
-        ZeroButton.Content = "一键全透明";
-        OpacitySlider.Value = 100;
-        OpacityValue.Text = "100%";
-        _updating = false;
+        ShowOpacityNumber();
         SyncControls();
+        // SelectionChanged may be running inside the open binding list.
+        TargetBox.IsDropDownOpen = false;
         RefreshList();
-        StatusText.Text = "已释放窗口。";
+        Status("");
     }
 
     private void ToggleHidden(object sender, RoutedEventArgs e) => Run(SwitchVisibility);
@@ -166,34 +208,78 @@ public sealed partial class MainWindow : Window
         bool hide = !_windows.IsHidden;
         if (hide) _effects.Stop();
         try { _windows.SetHidden(hide); }
+        finally
+        {
+            if (!_windows.IsHidden && (_invert || _gray)) ApplyAppearance();
+            SyncControls();
+        }
+        Status("");
+    }
+
+    private void ToggleClickThrough(object sender, RoutedEventArgs e) => Run(SwitchThrough);
+    private void SwitchThrough()
+    {
+        if (_windows.Target == null) return;
+        try { _windows.SetClickThrough(!_windows.IsClickThrough); }
         finally { SyncControls(); }
-        if (!hide && (_invert || _gray)) ApplyAppearance();
-        StatusText.Text = hide ? "窗口已隐藏。再次按同一快捷键即可显示。" : "已显示绑定窗口。";
+        Status("");
     }
 
     private void ChangeTopmost(object sender, RoutedEventArgs e)
     {
-        if (!_ready || _updating) return;
+        if (!_ready || _updating || _windows.Target == null) return;
         Run(() =>
         {
             try { _windows.SetTopmost(TopmostBox.IsChecked == true); }
             finally { SyncControls(); }
             if (_invert || _gray) ApplyAppearance();
-            StatusText.Text = _windows.IsTopmost ? "已置顶。" : "已取消置顶。";
+            Status("");
         });
     }
 
-    private void ChangeOpacity(object sender, RangeBaseValueChangedEventArgs e)
+    private void CommitOpacity(object sender, RoutedEventArgs e)
     {
-        if (!_ready || _updating || _windows.Target == null) return;
-        OpacityValue.Text = $"{Math.Round(e.NewValue)}%";
-        _opacityDelay.Stop();
-        _opacityDelay.Start();
+        if (_ready) Run(() => CommitNumber(finalize: true));
     }
+
+    private void OpacityInputKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == VirtualKey.Enter)
+        {
+            e.Handled = true;
+            Run(() => CommitNumber(finalize: true));
+        }
+        else if (e.Key == VirtualKey.Escape)
+        {
+            e.Handled = true;
+            _typing.Stop();
+            ShowOpacityNumber();
+        }
+    }
+
+    private void CommitNumber(bool finalize)
+    {
+        _typing.Stop();
+        if (_windows.Target == null || !OpacityInput.IsEnabled) return;
+        string raw = OpacityInput.Text.Trim().TrimEnd('%', '％').Trim();
+        if (!int.TryParse(raw, NumberStyles.None, CultureInfo.CurrentCulture, out int value) || value is < 0 or > 100)
+        {
+            if (finalize)
+            {
+                ShowOpacityNumber();
+                Status("不透明度可输入 0 到 100 的整数。");
+            }
+            return;
+        }
+        if (value != _requestedOpacity) SetRequestedOpacity(value);
+        if (finalize) ShowOpacityNumber();
+    }
+
     private void ToggleZero(object sender, RoutedEventArgs e) => Run(() =>
     {
-        _opacityDelay.Stop();
+        _typing.Stop();
         SetRequestedOpacity(_requestedOpacity == 0 ? _previousOpacity : 0);
+        ShowOpacityNumber();
     });
 
     private void SetRequestedOpacity(int value)
@@ -202,11 +288,12 @@ public sealed partial class MainWindow : Window
         if (value == 0 && _requestedOpacity > 0) _previousOpacity = _requestedOpacity;
         _requestedOpacity = value;
         ApplyAppearance();
+        Status("");
     }
 
     private void ChangeFilters(object sender, RoutedEventArgs e)
     {
-        if (!_ready || _updating) return;
+        if (!_ready || _updating || _windows.Target == null) return;
         _invert = InvertBox.IsChecked == true;
         _gray = GrayBox.IsChecked == true;
         Run(ApplyAppearance);
@@ -219,7 +306,6 @@ public sealed partial class MainWindow : Window
         {
             bool render = (_invert || _gray) && _requestedOpacity > 0 && !_windows.IsHidden;
             if (!render) _effects.Stop();
-            // Keep the actual window hittable while the click-through filter displays its pixels.
             if (render) _windows.SetOpacityByte(1);
             else _windows.SetOpacity(_requestedOpacity);
             if (render) _effects.Update(target.Handle, _invert, _gray, _requestedOpacity, false, _windows.IsTopmost);
@@ -229,7 +315,7 @@ public sealed partial class MainWindow : Window
             _effects.Stop();
             _invert = _gray = false;
             try { _windows.SetOpacity(_requestedOpacity); }
-            finally { _requestedOpacity = _windows.Opacity ?? 100; }
+            finally { _requestedOpacity = _windows.Opacity ?? 100; ShowOpacityNumber(); }
             throw;
         }
         finally { SyncControls(); }
@@ -242,32 +328,14 @@ public sealed partial class MainWindow : Window
         {
             _invert = _gray = false;
             ApplyAppearance();
-            StatusText.Text = "滤镜已关闭：" + message;
+            Status("滤镜已关闭：" + message);
         });
     }
-
-    private void SaveHotkey(object sender, RoutedEventArgs e) => Run(() =>
-    {
-        uint modifiers = (CtrlKey.IsChecked == true ? 2u : 0u) | (AltKey.IsChecked == true ? 1u : 0u) |
-                         (ShiftKey.IsChecked == true ? 4u : 0u) | (WinKey.IsChecked == true ? 8u : 0u);
-        if (_hotkey == null || ShortcutKey.SelectedItem is not string key)
-            throw new InvalidOperationException("无法设置快捷键。请重新打开控制面板。");
-        var chosen = new Shortcut(modifiers, Shortcut.FromName(key));
-        _hotkey.Register(chosen);
-        UpdateShortcutLabel();
-        chosen.Save();
-        StatusText.Text = "快捷键已保存。";
-    });
-
-    private void UpdateShortcutLabel() => ShortcutInfo.Text = _hotkey?.Active is { } key ?
-        $"当前快捷键  {key}" : "当前无快捷键，请选择可用的组合。";
 
     private void ClosingWindow(AppWindow sender, AppWindowClosingEventArgs args)
     {
         if (_windows.Target == null) return;
         try { Release(); }
-        catch (Exception ex) { args.Cancel = true; StatusText.Text = "尚未释放窗口，请重试：" + ex.Message; }
+        catch (Exception ex) { args.Cancel = true; Status("窗口未完全恢复：" + ex.Message); }
     }
-
-    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint hwnd);
 }

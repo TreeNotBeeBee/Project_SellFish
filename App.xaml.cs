@@ -12,7 +12,7 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        _instanceMutex = new Mutex(false, @"Local\WindowPilot.Desktop.Instance");
+        _instanceMutex = new Mutex(false, AppProfile.MutexName);
         bool acquired;
         try { acquired = _instanceMutex.WaitOne(0); }
         catch (AbandonedMutexException) { acquired = true; }
