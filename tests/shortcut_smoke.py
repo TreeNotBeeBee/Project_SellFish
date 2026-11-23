@@ -65,9 +65,20 @@ def run(exe, profile, title):
         def field(auto_id):
             return spec.child_window(auto_id=auto_id, found_index=0).wrapper_object()
 
-        def focus():
-            panel.set_focus()
-            assert win32gui.GetForegroundWindow() == panel.handle
+        def focus(handle=panel.handle):
+            # Wait for native show/activation to settle. Send clicks only to a
+            # blank point owned by one of this test's two disposable windows.
+            def activate():
+                if win32gui.GetForegroundWindow() == handle:
+                    return True
+                point = (7, 9) if handle == panel.handle else (24, 32)
+                pt = win32gui.ClientToScreen(handle, point)
+                if win32gui.GetAncestor(win32gui.WindowFromPoint(pt), 2) == handle:
+                    mouse.click(coords=pt)
+                else:
+                    desktop.window(handle=handle).set_focus()
+                return win32gui.GetForegroundWindow() == handle
+            wait(activate, "test window has foreground focus")
 
         def record(auto_id, path, *keys):
             box = field(auto_id)
@@ -108,8 +119,7 @@ def run(exe, profile, title):
         wait(lambda: win32gui.IsWindowVisible(hwnd), "right Ctrl unhides target")
         # Send the ordinary editing chord to our empty Tk fixture, not to an
         # editor with a selection or to another application on the test desktop.
-        desktop.window(handle=hwnd).set_focus()
-        assert win32gui.GetForegroundWindow() == hwnd
+        focus(hwnd)
         chord(LCTRL, ord("C"))
         chord(RCTRL, ord("C"))
         chord(LCTRL, RCTRL)
