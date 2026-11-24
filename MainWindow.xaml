@@ -40,9 +40,20 @@
                 <Setter Property="FontSize" Value="12"/>
             </Style>
         </Grid.Resources>
-        <Grid x:Name="PanelContent" Margin="16,32,16,12" RowSpacing="9" VerticalAlignment="Center">
+        <Grid x:Name="PanelContent" Margin="16,26,16,10" RowSpacing="6">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <SelectorBar x:Name="Pages" HorizontalAlignment="Left" SelectionChanged="PageChanged"
+                         AutomationProperties.Name="功能分页">
+                <SelectorBarItem x:Name="BasicTab" Text="基础" IsSelected="True" AutomationProperties.AutomationId="BasicTab"/>
+                <SelectorBarItem x:Name="AdvancedTab" Text="进阶" AutomationProperties.AutomationId="AdvancedTab"/>
+                <SelectorBarItem x:Name="SettingsTab" Text="设置" AutomationProperties.AutomationId="SettingsTab"/>
+            </SelectorBar>
+        <Grid x:Name="BasicPage" Grid.Row="1" RowSpacing="9" VerticalAlignment="Top">
+            <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
@@ -117,7 +128,33 @@
                 </Grid>
             </Grid>
 
-            <TextBlock x:Name="StatusText" Grid.Row="3" Visibility="Collapsed" TextWrapping="Wrap"
+        </Grid>
+        <Grid x:Name="AdvancedPage" Grid.Row="1" Visibility="Collapsed" RowSpacing="6">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button x:Name="PickControl" Content="选择控件" Click="PickNativeControl" AutomationProperties.AutomationId="PickControl"/>
+                <Button x:Name="PairWeb" Content="连接网页" Click="PairBrowser" AutomationProperties.AutomationId="PairWeb"/>
+                <Button x:Name="OpenAnswers" Content="回答窗" Click="OpenAnswerView" AutomationProperties.AutomationId="OpenAnswers"/>
+                <Button x:Name="OpenComposer" Content="输入窗" Click="OpenInputView" AutomationProperties.AutomationId="OpenComposer"/>
+            </StackPanel>
+            <TextBlock x:Name="AdvancedHint" Grid.Row="1" TextWrapping="Wrap"
+                       Style="{ThemeResource CaptionTextBlockStyle}" AutomationProperties.AutomationId="AdvancedHint"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="DetachedRows" Spacing="2" AutomationProperties.Name="已分离的组件"/>
+            </ScrollViewer>
+        </Grid>
+        <StackPanel x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed">
+            <CheckBox x:Name="ToolPin" Content="sell fish 始终置顶" Click="SetToolPin"
+                      Style="{StaticResource PanelCheckBox}" AutomationProperties.AutomationId="ToolPin"/>
+            <TextBlock Text="同时应用于主面板、迷你工具栏和所有分离浮窗。" Style="{ThemeResource CaptionTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </StackPanel>
+            <TextBlock x:Name="StatusText" Grid.Row="2" Visibility="Collapsed" TextWrapping="Wrap"
                        MaxLines="2" TextTrimming="CharacterEllipsis" Style="{ThemeResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        AutomationProperties.AutomationId="StatusText" AutomationProperties.LiveSetting="Polite"/>

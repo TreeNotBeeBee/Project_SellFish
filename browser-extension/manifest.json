@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "sell fish · 网页控件分离",
+  "version": "1.3.0",
+  "description": "将当前 ChatGPT 对话的回答和输入框连接到本机 sell fish 浮窗。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5ZjuoJxCqesNhX3ZWr5wo1KmqNf5OjosYmUnPctAxJ2ZRIZnRs+NHvuZeW+923kZ7wn5C2uR0Y08lucPnf9nJZWGKV76z9CHeTZRrrCVDSwcnWOtvo0pE7Oi4SE51jVXalZBmS7ZO63fBwvImsX06rL/1fKPaaEFiNKpUjtoehW4aL4jhCONKzjZom/48ootil9m7owrZEwgUHq0Xrwwc7NVODr0VXakfZZoxYlpo6whr8wWoBMR/q1kDtG6fx/iHwvrdOcxaB81jv+yOEG1zwBGqICX6KaJGEMEM4LUa/HKUbn40plhegs6T21qkEH49ma/glrGJAJhVFCO3WGM2QIDAQAB",
+  "permissions": ["activeTab", "scripting", "nativeMessaging"],
+  "background": { "service_worker": "worker.js" },
+  "action": { "default_title": "连接当前 ChatGPT 对话到 sell fish" }
+}

@@ -39,6 +39,7 @@ public sealed partial class MainWindow : Window
             new("clickThrough", ClickThroughBox, _ => Run(SwitchThrough)),
             new("topmost", TopmostBox, value => Run(() => SetTopmost(value)))
         ]);
+        InitializeDetachedControls();
         _typing = DispatcherQueue.CreateTimer();
         _typing.Interval = TimeSpan.FromMilliseconds(320);
         _typing.IsRepeating = false;
@@ -67,6 +68,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _ready = false;
+            EndDetachedSession();
             _refresh.Stop();
             _guard.Stop();
             _typing.Stop();
@@ -186,6 +188,7 @@ public sealed partial class MainWindow : Window
             InvertBox.IsChecked = _invert;
             GrayBox.IsChecked = _gray;
             ZeroButton.Content = _requestedOpacity == 0 ? $"{_previousOpacity}%" : "0%";
+            RefreshAdvancedControls();
         }
         finally { _updating = false; }
     }
@@ -200,6 +203,7 @@ public sealed partial class MainWindow : Window
     private void Release()
     {
         _typing.Stop();
+        EndDetachedSession();
         _effects.Stop();
         _windows.Release();
         _invert = _gray = false;

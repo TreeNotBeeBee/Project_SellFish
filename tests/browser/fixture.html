@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh">
+<meta charset="utf-8">
+<title>sell fish 网页控件测试</title>
+<style>body{font:16px system-ui;margin:30px}#prompt-textarea{white-space:pre-wrap;border:1px solid #555;min-height:45px;padding:10px}</style>
+<h1>sell fish 网页控件测试</h1>
+<a href="/c/22222222-2222-4222-8222-222222222222" id="other">另一段对话</a>
+<main id="turns"></main>
+<form id="composer">
+ <div id="prompt-textarea" contenteditable="true" role="textbox" aria-label="输入"></div>
+ <button data-testid="send-button" type="button" disabled>发送</button>
+ <button data-testid="stop-button" type="button" hidden>停止</button>
+</form>
+<output id="send-count">0</output>
+<script>
+const editor = document.getElementById("prompt-textarea");
+const send = document.querySelector('[data-testid="send-button"]');
+const stop = document.querySelector('[data-testid="stop-button"]');
+let model = "";
+let streaming;
+let total = 0;
+editor.addEventListener("input", () => {
+  model = editor.innerText.replace(/\r\n/g, "\n");
+  send.disabled = !model.trim();
+});
+function addTurn(role) {
+  const turn = document.createElement("article");
+  turn.dataset.messageAuthorRole = role;
+  turn.dataset.messageId = crypto.randomUUID();
+  document.getElementById("turns").append(turn);
+  return turn;
+}
+send.onclick = () => {
+  if (!model.trim() || !stop.hidden) return;
+  const user = addTurn("user");
+  const content = document.createElement("div");
+  content.className = "whitespace-pre-wrap";
+  content.style.whiteSpace = "pre-wrap";
+  content.textContent = model;
+  user.append(content);
+  model = "";
+  editor.replaceChildren();
+  editor.dispatchEvent(new Event("input", {bubbles:true}));
+  document.getElementById("send-count").textContent = String(++total);
+  send.hidden = true;
+  stop.hidden = false;
+  if (location.pathname === "/") history.replaceState({}, "", "/c/11111111-1111-4111-8111-111111111111");
+  const answer = addTurn("assistant");
+  answer.innerHTML = '<div class="markdown"><p>第一段</p><ol><li>第一项</li><li>第二项</li></ol><pre><code>alpha\nbeta</code></pre></div>';
+  streaming = setTimeout(() => {
+    answer.querySelector("p").textContent += " · 流式完成";
+    stop.click();
+  }, 240);
+};
+stop.onclick = () => {clearTimeout(streaming); stop.hidden = true; send.hidden = false;};
+document.getElementById("other").onclick = event => {event.preventDefault(); history.pushState({}, "", event.target.href);};
+</script>
+</html>
