@@ -75,7 +75,8 @@ def test(exe, profile, title):
         page("BasicTab")
         choose(panel.wrapper_object(), element("TargetBox"), title)
         page("AdvancedTab")
-        assert not element("PairWeb").is_enabled()
+        assert element("PickControl").is_enabled()
+        assert not panel.child_window(auto_id="PairWeb").exists(timeout=0.5)
         for index, field in enumerate(fields):
             element("PickControl").invoke()
             wait(lambda: not element("PickControl").is_enabled(), "picker waits for a bound control")

@@ -2,7 +2,7 @@
 
 **sell fish 是一款简洁的 Windows 窗口控制软件，目前仍在开发中。**
 
-从下拉框选定一个窗口后，可以隐藏窗口和它的任务栏按钮、置顶、调节不透明度、反色、灰度或让鼠标穿透。切换到别的应用后，操作仍作用于原来的窗口。
+从下拉框选定一个窗口后，可以隐藏窗口和它的任务栏按钮、置顶、调节不透明度、反色、灰度或让鼠标穿透。还可以把窗口里可访问的文本或输入框放到独立浮窗中。所有功能都由 Windows 桌面程序提供。
 
 ## 使用
 
@@ -22,17 +22,9 @@
 
 浮窗会跟随原控件的文本变化。对公开可写值的输入框，可编辑后点 **写回原控件**。两边同时修改时，先复制要保留的文字，再重新载入原文。实际可用的操作取决于应用向 Windows UI Automation 公开的能力。密码框不支持分离。
 
-### 在 Chrome 和 Edge 中分离 ChatGPT
+浏览器当前页面的控件同样可以尝试点选。切换标签或刷新页面可能让原控件失效，恢复时需重新选择控件。释放绑定或退出面板会关闭此窗口的全部分离浮窗。
 
-回答和输入各使用一个桌面浮窗。浏览器切换标签或最小化后，只要源标签仍在运行，扩展会继续跟随已配对的对话。Windows 标准控件可单独使用，无需安装扩展。
-
-1. 将完整的 Windows 压缩包解压到打算保留的位置。在这个文件夹打开 PowerShell，运行 `.\Install-BrowserBridge.ps1`，为当前 Windows 用户注册本地连接程序。移动文件夹后重新运行一次。
-2. 在 Chrome 打开 `chrome://extensions`，或在 Edge 打开 `edge://extensions`。开启 **开发者模式**，点击 **加载已解压的扩展程序**，选择解压目录中的 `browser-extension`。可把 **sell fish** 固定在浏览器工具栏上。两个浏览器使用同一份扩展，在要使用的浏览器里分别加载即可。
-3. 打开要使用的 `chatgpt.com` 对话，在 sell fish 的 **基础** 页绑定这个浏览器窗口。进入 **进阶 → 连接网页**，再回到该对话，点一次 sell fish 扩展图标。连接提示出现后，在进阶页分别点 **回答窗** 和 **输入窗**。
-4. 回答窗支持滚动及选择复制文本。滚回底部可继续跟随生成。输入窗支持中文组词，按 **Shift+Enter** 换行，按 **Enter** 或点 **发送** 提交。原网页保留完整界面，附件、语音和模型选择可在原页操作。
-5. 切到另一段对话、刷新、关闭或丢弃标签会暂停或断开连接。输入窗会保留本地草稿。发送结果不明确时，先到原页核对。要在新对话继续，请重新点 **连接网页** 并在目标标签确认。释放绑定或退出会关闭这组浮窗。
-
-连接程序通过当前 Windows 用户的本地管道传递数据。扩展在点击图标后才连接指定标签。移除时先在浏览器扩展页移除 sell fish，再从安装目录运行 `.\Uninstall-BrowserBridge.ps1`。
+从 1.3 首个预览版升级时，如果安装过实验性网页扩展，可在浏览器的扩展管理页移除 **sell fish · 网页控件分离**，然后在旧版解压目录运行 `.\Uninstall-BrowserBridge.ps1` 清理注册。新版解压到新文件夹即可运行。
 
 ### 工具窗口置顶
 
@@ -56,7 +48,7 @@
 .\build.ps1
 ```
 
-输出在 `dist\WindowPilot-win-x64`，包含桌面程序、浏览器连接程序、注册和卸载脚本，以及可直接在 Chrome 或 Edge 加载的 `browser-extension` 目录。首次构建需要从 NuGet 还原依赖。SDK 和包版本由 `global.json` 与项目文件管理。构建后运行 `.\pack.ps1` 生成 Windows 程序包。传入 `-ExtensionArchivePath dist\sell-fish-browser-extension.zip` 可同时生成独立扩展包。`.\pack-source.ps1` 可另行生成源码包。
+输出在 `dist\WindowPilot-win-x64`，包含桌面程序和运行所需的库。首次构建需要从 NuGet 还原依赖。SDK 和包版本由 `global.json` 与项目文件管理。构建后运行 `.\pack.ps1` 生成 Windows 程序包，运行 `.\pack-source.ps1` 生成源码包。
 
 ## 验证
 
@@ -66,12 +58,10 @@
 dotnet run --project .\tests\NativeTests.csproj -c Release
 .\tests\Run-EffectsProbe.ps1
 dotnet run --project .\tests\DetachedProbe\DetachedProbe.csproj -c Release
-.\tests\BrowserBridge\Run.ps1
 ```
 
 - **窗口与滤镜**分别检查隐藏、任务栏、状态恢复，以及桌面显示颜色、鼠标命中和遮挡。[窗口测试说明](tests/README-native.md) · [滤镜测试说明](tests/EffectsProbe/README.md)
-- **分离浮窗**使用独立进程的标准 Windows 控件，验证中文写回、冲突保留、密码拒绝、独立关闭、流式文本跟随、向上滚动和前台焦点。结果位于 `%TEMP%\sell-fish-detached-probe.txt`。
-- **浏览器连接**检查原生消息来源、配对、命令及断线处理。网页适配器和双浮窗另有本地测试，在实际浏览器中使用可控对话页面。线上 ChatGPT 需要在独立测试对话中另外检查中文输入、发送和生成结果。[浏览器测试说明](tests/browser/README.md) · [双浮窗测试说明](tests/BrowserWindows/README.md)
+- **分离浮窗**使用独立进程的标准 Windows 控件，验证中文写回、冲突保留、密码框保护、独立关闭和窗口置顶。结果位于 `%TEMP%\sell-fish-detached-probe.txt`。
 
 可选的面板和快捷键测试使用带 Tk 的 Windows Python、pywinauto 和 pywin32，在空闲的交互桌面上依次运行。
 
@@ -90,7 +80,6 @@ python -X utf8 tests/advanced_ui_smoke.py "dist/WindowPilot-win-x64/sell fish.ex
 | GlobalShortcut.cs | 两个快捷键框的录入、冲突检查、系统注册及保存 |
 | CompactWindow.cs / MiniToolbar.cs | 双模式面板、固定尺寸、拖动、黑白主题和可配置工具栏 |
 | Detached / MainWindow.Advanced.cs | Windows UI Automation 控件选择、浮窗和高级分页 |
-| BrowserBridge / browser-extension | 浏览器配对、本地消息传输、对话状态和网页适配 |
 | BackdropOpacityLayer.cs | 用独立的鼠标穿透图层混合实时背景，兼容自行重设透明度的目标 |
 | EffectSession.cs / NativeEffectOverlay.cs | 捕获绑定窗口、执行 Win2D 滤镜并将结果显示在目标位置 |
 | App.xaml.cs | 应用启动和同一会话内的单实例保护 |

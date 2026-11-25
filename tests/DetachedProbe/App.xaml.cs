@@ -8,7 +8,7 @@ using WinRT.Interop;
 
 namespace WindowPilot;
 
-// This probe creates its own external native controls and uses no browser account.
+// Both windows read and write controls owned by a separate process.
 public partial class App : Application
 {
     public App() => InitializeComponent();
@@ -57,67 +57,46 @@ public partial class App : Application
             try { await Pick(4); throw new Exception("button accepted"); }
             catch (InvalidOperationException) { Check(true, "unsupported native button excluded"); }
 
+            var editor = new NativeTextWindow(await Pick(1));
+            var reference = new NativeTextWindow(await Pick(2));
             nint foreground = GetForegroundWindow();
-            var input = new ChatInputWindow();
-            var answers = new ChatAnswerWindow();
-            var native = new NativeTextWindow(writable);
-            foreach (var window in new DetachedWindow[] { input, answers, native })
+            foreach (var view in new[] { editor, reference })
             {
-                windows.Add(window);
-                window.SetAppearance(true, ElementTheme.Dark);
-                window.Show();
-                Check((GetWindowLongW(WindowNative.GetWindowHandle(window), -20) & 8) != 0, "floating window pinned");
+                windows.Add(view);
+                view.SetAppearance(true, ElementTheme.Dark);
+                view.Show();
+                Check((GetWindowLongW(WindowNative.GetWindowHandle(view), -20) & 8) != 0, "floating window pinned");
             }
-            input.SetConnected(true, "");
-            input.SetRemoteDraft("first", true);
-            var box = ((Grid)input.Content).Children.OfType<TextBox>().Single();
-            var row = ((Grid)input.Content).Children.OfType<StackPanel>().Single();
-            var send = row.Children.OfType<Button>().Single(b => (string)b.Content == "发送");
-            var page = row.Children.OfType<Button>().Single(b => (string)b.Content == "采用网页草稿");
-            int sent = 0, drafts = 0;
-            input.SendRequested += (_, _) => sent++;
-            input.DraftChanged += (_, _) => drafts++;
-            box.Text = "local";
-            for (int tries = 0; drafts == 0 && tries < 60; tries++) await Task.Delay(80);
-            Check(drafts == 1, "local drafts are debounced");
-            input.SetRemoteDraft("concurrent", true);
-            Check(box.Text == "local" && !send.IsEnabled && page.Visibility == Visibility.Visible, "concurrent web edit retains local");
-            Invoke(page);
-            await Task.Delay(80);
-            Check(box.Text == "concurrent", "use web draft resolves conflict");
-            Invoke(send);
-            await Task.Delay(80);
-            Check(sent == 1 && !send.IsEnabled && box.IsReadOnly, "in-flight send is single-shot");
-            input.CompleteSend(false, "test disconnect");
-            input.SetConnected(false, "disconnected");
-            Check(box.Text == "concurrent" && !send.IsEnabled, "uncertain send retains draft");
-            answers.SetAnswers((AnswerBlock[])[new("paragraph", "回答"), new("list", "项目"), new("code", "print(1)")]);
-            var viewport = ((Grid)answers.Content).Children.OfType<ScrollViewer>().Single();
-            var rich = (RichTextBlock)viewport.Content;
-            Check(rich.Blocks.Count == 3 && rich.IsTextSelectionEnabled, "selectable paragraphs, list and code");
-            for (int n = 0; n < 8; n++)
-                answers.SetAnswers((AnswerBlock[])[new("paragraph", "回答"), new("list", "项目"), new("code", $"print({n})")]);
-            var history = Enumerable.Range(0, 100).Select(n => new AnswerBlock("paragraph", $"line {n}")).ToList();
-            answers.SetAnswers(history);
-            await Task.Delay(180);
-            Check(viewport.ScrollableHeight > 0 && Math.Abs(viewport.VerticalOffset - viewport.ScrollableHeight) < 4,
-                "streaming follows the end");
-            viewport.ChangeView(null, 80, null, true);
-            await Task.Delay(120);
-            var offset = viewport.VerticalOffset;
-            history.Add(new("paragraph", "next message"));
-            answers.SetAnswers(history);
-            await Task.Delay(120);
-            Check(Math.Abs(viewport.VerticalOffset - offset) < 4, "scroll position preserved while reading history");
-            Check(GetForegroundWindow() == foreground, "opening and streaming preserve foreground");
-            nint other = WindowNative.GetWindowHandle(answers);
-            input.Close();
+            var editGrid = (Grid)editor.Content;
+            var editBox = editGrid.Children.OfType<TextBox>().Single();
+            var actions = editGrid.Children.OfType<StackPanel>().Single();
+            var apply = actions.Children.OfType<Button>().Single(b => (string)b.Content == "写回原控件");
+            var reload = actions.Children.OfType<Button>().Single(b => (string)b.Content == "重新载入");
+            var refBox = ((Grid)reference.Content).Children.OfType<TextBox>().Single();
+            Check(!editBox.IsReadOnly && refBox.IsReadOnly, "detached editors honor source capabilities");
+            Check(editBox.Text == "输入中文" && refBox.Text == "reference", "each detached window displays its own source");
+            editBox.Text = "浮窗写回";
+            Invoke(apply);
+            await Wait(() => !editBox.IsReadOnly && !apply.IsEnabled);
+            Check(await writable.ReadAsync() == "浮窗写回", "apply updates the external native control");
+            editBox.Text = "未保存的编辑";
+            SetFixtureText(hwnd, 1, "外部更新");
+            SetFixtureText(hwnd, 2, "只读值也已更新");
+            await Wait(() => refBox.Text == "只读值也已更新" && !apply.IsEnabled && reload.IsEnabled);
+            Check(editBox.Text == "未保存的编辑" && await writable.ReadAsync() == "外部更新", "conflicting text retained on both sides");
+            Invoke(reload);
+            await Wait(() => editBox.Text == "外部更新");
+            Check(GetForegroundWindow() == foreground, "showing and refreshing detached controls preserve foreground");
+
+            nint remaining = WindowNative.GetWindowHandle(reference);
+            editor.Close();
             await Task.Delay(100);
-            Check(IsWindow(other), "closing input leaves answer window alive");
-            answers.SetAppearance(false, ElementTheme.Light);
-            Check((GetWindowLongW(other, -20) & 8) == 0, "pin changes existing float");
-            native.Close();
-            answers.Close();
+            SetFixtureText(hwnd, 2, "still connected");
+            await Wait(() => refBox.Text == "still connected");
+            Check(IsWindow(remaining), "closing a detached window keeps its sibling connected");
+            reference.SetAppearance(false, ElementTheme.Light);
+            Check((GetWindowLongW(remaining, -20) & 8) == 0, "pin changes an existing float");
+            reference.Close();
             _log.Add("PASS");
         }
         catch (Exception ex) { _log.Add(ex.ToString()); Environment.ExitCode = 1; }
@@ -142,6 +121,22 @@ public partial class App : Application
     private static void Invoke(Button button) =>
         ((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
 
+    private static async Task Wait(Func<bool> ready)
+    {
+        for (int tries = 0; tries < 80; tries++)
+        {
+            if (ready()) return;
+            await Task.Delay(100);
+        }
+        throw new TimeoutException("Detached window did not reflect its native source in time.");
+    }
+
+    private static void SetFixtureText(nint window, int id, string text)
+    {
+        if (SendMessageW(GetDlgItem(window, id), 0x000C /* WM_SETTEXT */, 0, text) == 0)
+            throw new InvalidOperationException("Could not update the external test edit control.");
+    }
+
     private static void MakeFixture(string title)
     {
         var instance = GetModuleHandleW(null);
@@ -157,6 +152,7 @@ public partial class App : Application
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern nint FindWindowW(string cls, string title);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
     [DllImport("user32.dll")] private static extern nint GetDlgItem(nint hwnd, int id);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern nint SendMessageW(nint hwnd, uint message, nint wParam, string lParam);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hwnd, out Rect rect);
     [DllImport("user32.dll")] private static extern bool IsWindow(nint hwnd);
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();

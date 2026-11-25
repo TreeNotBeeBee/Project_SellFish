@@ -135,12 +135,8 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <StackPanel Orientation="Horizontal" Spacing="6">
-                <Button x:Name="PickControl" Content="选择控件" Click="PickNativeControl" AutomationProperties.AutomationId="PickControl"/>
-                <Button x:Name="PairWeb" Content="连接网页" Click="PairBrowser" AutomationProperties.AutomationId="PairWeb"/>
-                <Button x:Name="OpenAnswers" Content="回答窗" Click="OpenAnswerView" AutomationProperties.AutomationId="OpenAnswers"/>
-                <Button x:Name="OpenComposer" Content="输入窗" Click="OpenInputView" AutomationProperties.AutomationId="OpenComposer"/>
-            </StackPanel>
+            <Button x:Name="PickControl" Content="选择控件" Click="PickNativeControl" HorizontalAlignment="Left"
+                    AutomationProperties.AutomationId="PickControl"/>
             <TextBlock x:Name="AdvancedHint" Grid.Row="1" TextWrapping="Wrap"
                        Style="{ThemeResource CaptionTextBlockStyle}" AutomationProperties.AutomationId="AdvancedHint"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
