@@ -7,7 +7,7 @@ namespace WindowPilot;
 
 public sealed partial class MainWindow
 {
-    private readonly Dictionary<string, NativeTextWindow> _detached = [];
+    private readonly Dictionary<string, DetachedWindow> _detached = [];
     private CancellationTokenSource? _picking;
     private bool _pinned;
     private static string PinPath => Path.Combine(AppProfile.DirectoryPath, "tool-topmost.txt");
@@ -56,14 +56,17 @@ public sealed partial class MainWindow
             _windows.IsClickThrough ? "先关闭目标窗口的页面穿透，再选择控件。" :
             _requestedOpacity == 0 ? "先调高目标窗口的不透明度，再选择控件。" : null;
         if (unavailable != null) _picking?.Cancel();
-        PickControl.IsEnabled = unavailable == null && _picking == null;
+        PickControl.IsEnabled = PickRegion.IsEnabled = unavailable == null && _picking == null;
         string hint = unavailable ?? (_picking != null
-            ? "单击目标窗口内的文本控件，按 Esc 取消。"
-            : "可从目标窗口选择文本或输入框。");
+            ? "单击目标窗口中的文字或控件，按 Esc 取消。"
+            : "阅读多段文字时，选择输出区域，再点击其中一段。");
         if (AdvancedHint.Text != hint) AdvancedHint.Text = hint;
     }
 
-    private async void PickNativeControl(object sender, RoutedEventArgs args)
+    private async void PickNativeControl(object sender, RoutedEventArgs args) => await PickControlAsync(outputRegion: false);
+    private async void PickOutputRegion(object sender, RoutedEventArgs args) => await PickControlAsync(outputRegion: true);
+
+    private async Task PickControlAsync(bool outputRegion)
     {
         if (_windows.Target is not { } target || _picking != null) return;
         using var cancellation = new CancellationTokenSource();
@@ -71,20 +74,30 @@ public sealed partial class MainWindow
         RefreshAdvancedControls();
         try
         {
-            var binding = await NativeControlPicker.PickAsync(target, cancellation.Token);
-            if (cancellation.IsCancellationRequested || _windows.Target != target || !_windows.IsAlive())
-            { binding.Dispose(); return; }
-            if (_detached.TryGetValue(binding.Key, out var existing))
+            if (outputRegion)
             {
-                binding.Dispose();
-                existing.Activate();
-                return;
+                var region = await NativeControlPicker.PickRegionAsync(target, cancellation.Token);
+                OpenPicked(region, region.Key, region.Label, () => new NativeRegionWindow(region));
             }
-            NativeTextWindow view;
-            try { view = new NativeTextWindow(binding); }
-            catch { binding.Dispose(); throw; }
-            ShowDetached(view, binding.Key, binding.Label);
+            else
+            {
+                var binding = await NativeControlPicker.PickAsync(target, cancellation.Token);
+                OpenPicked(binding, binding.Key, binding.Label, () => new NativeTextWindow(binding));
+            }
             Status("");
+
+            void OpenPicked(IDisposable source, string key, string label, Func<DetachedWindow> createWindow)
+            {
+                // 点选期间可以释放或更换目标。只有原绑定仍有效，才把新来源交给浮窗。
+                if (cancellation.IsCancellationRequested || _windows.Target != target || !_windows.IsAlive())
+                { source.Dispose(); return; }
+                if (_detached.TryGetValue(key, out var open))
+                { source.Dispose(); open.Activate(); return; }
+                DetachedWindow view;
+                try { view = createWindow(); }
+                catch { source.Dispose(); throw; }
+                ShowDetached(view, key, label);
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (!cancellation.IsCancellationRequested) Status(ex.Message); }
@@ -95,7 +108,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private void ShowDetached(NativeTextWindow window, string key, string label)
+    private void ShowDetached(DetachedWindow window, string key, string label)
     {
         string initialTitle = window.Title;
         int suffix = 1;

@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sell fish UIA fixture</title>
+<style>
+  body { font: 16px sans-serif; margin: 10px 40px; }
+  .ProseMirror { border: 1px solid; min-height: 45px; white-space: pre-wrap; }
+  p { margin: 3px; }
+</style>
+<nav><a href="#outside">Outside navigation</a></nav>
+<main>
+  <section aria-label="Conversation output" id="output">
+    <article aria-label="First answer"><p>First paragraph</p><p>Second paragraph</p></article>
+    <article aria-label="Latest answer" id="latest"><p>Third paragraph</p></article>
+  </section>
+  <form aria-label="Compose" onsubmit="return false">
+    <div id="mount"></div>
+    <button type="button" id="decoy">Unrelated button</button>
+    <button type="button" id="send">发送</button>
+  </form>
+</main>
+<script src="/editor.js"></script>

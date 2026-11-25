@@ -16,6 +16,11 @@ public partial class App : Application
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         string[] arguments = Environment.GetCommandLineArgs();
+        if (arguments.Length == 2 && arguments[1] == "--chromium-fixture")
+        {
+            await RunChromiumFixtureAsync();
+            return;
+        }
         if (arguments.Length == 3 && arguments[1] == "--fixture")
         {
             MakeFixture(arguments[2]);
@@ -48,6 +53,7 @@ public partial class App : Application
             using var writable = await Pick(1);
             Check(writable.Writable && writable.InitialText == "initial", "Win32 Edit discovered");
             Check(await writable.WriteAsync("initial", "输入中文") == "输入中文", "write and read back Unicode text");
+            await CheckNativeSendAsync(writable, hwnd);
             try { await writable.WriteAsync("initial", "wrong"); throw new Exception("stale write succeeded"); }
             catch (InvalidOperationException) { Check(await writable.ReadAsync() == "输入中文", "stale writes preserve target"); }
             using var readOnly = await Pick(2);
@@ -145,6 +151,7 @@ public partial class App : Application
         CreateWindowExW(0, "Edit", "reference", 0x50000800, 16, 50, 200, 28, root, 2, instance, 0);
         CreateWindowExW(0, "Edit", "secret fixture", 0x50000020, 16, 88, 200, 28, root, 3, instance, 0);
         CreateWindowExW(0, "Button", "Unsupported", 0x50000000, 16, 126, 200, 28, root, 4, instance, 0);
+        InstallSendCounter(root, instance);
     }
     [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern nint GetModuleHandleW(string? name);

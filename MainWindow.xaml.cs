@@ -202,6 +202,7 @@ public sealed partial class MainWindow : Window
 
     private void Release()
     {
+        // 先撤销待提交的透明度和分离控件，再恢复窗口，避免迟到的回调操作旧目标。
         _typing.Stop();
         EndDetachedSession();
         _effects.Stop();
@@ -324,6 +325,7 @@ public sealed partial class MainWindow : Window
         {
             bool render = (_invert || _gray) && _requestedOpacity > 0 && !_windows.IsHidden;
             if (!render) _effects.Stop();
+            // 滤镜由叠加层绘制；原窗口保留 1/255 的不透明度以接收鼠标输入。
             if (render) _windows.SetOpacityByte(1);
             else _windows.SetOpacity(_requestedOpacity);
             if (render) _effects.Update(target.Handle, _invert, _gray, _requestedOpacity, false, _windows.IsTopmost);

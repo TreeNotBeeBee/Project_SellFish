@@ -9,9 +9,41 @@ namespace WindowPilot;
 
 internal static class NativeControlPicker
 {
+    private static int _picking;
+
     internal static async Task<NativeControlBinding> PickAsync(WindowTarget target, CancellationToken token)
     {
+        var point = await PickPointAsync(target, token);
+        return await LocateAsync(target, point.X, point.Y, token);
+    }
+
+    internal static async Task<NativeTextRegion> PickRegionAsync(WindowTarget target, CancellationToken token)
+    {
+        var point = await PickPointAsync(target, token);
+        return await LocateRegionAsync(target, point.X, point.Y, token);
+    }
+
+    internal static Task<NativeTextRegion> LocateRegionAsync(WindowTarget target, int x, int y, CancellationToken token) =>
+        UiaThread.ReadRegion(api =>
+        {
+            token.ThrowIfCancellationRequested();
+            var region = NativeTextRegion.Create(api, target, ElementAt(api, target, x, y));
+            if (token.IsCancellationRequested) { region.Dispose(); token.ThrowIfCancellationRequested(); }
+            return region;
+        });
+
+    internal static async Task<(int X, int Y)> PickPointAsync(WindowTarget target, CancellationToken token)
+    {
         var queue = DispatcherQueue.GetForCurrentThread() ?? throw new InvalidOperationException("请从控制面板选择控件。");
+        // 面板和多个输入浮窗可同时请求点选，同一对鼠标按下/松开只属于一个请求。
+        if (Interlocked.CompareExchange(ref _picking, 1, 0) != 0)
+            throw new InvalidOperationException("已有点选正在进行。请先完成点选，或按 Esc 取消。");
+        try { return await CapturePointAsync(queue, target, token); }
+        finally { Interlocked.Exchange(ref _picking, 0); }
+    }
+
+    private static async Task<(int X, int Y)> CapturePointAsync(DispatcherQueue queue, WindowTarget target, CancellationToken token)
+    {
         var point = new TaskCompletionSource<PickPoint>(TaskCreationOptions.RunContinuationsAsynchronously);
         PickPoint? pressed = null;
         nint hook = 0;
@@ -58,16 +90,21 @@ internal static class NativeControlPicker
             if (hook != 0) UnhookWindowsHookEx(hook);
             GC.KeepAlive(capture);
         }
-        return await LocateAsync(target, picked.X, picked.Y, token);
+        return (picked.X, picked.Y);
+    }
+
+    internal static IUIAutomationElement ElementAt(IUIAutomation api, WindowTarget target, int x, int y)
+    {
+        if (GetAncestor(WindowFromPoint(new(x, y)), 2) != target.Handle) throw InvalidTarget();
+        VerifyWindow(target);
+        return api.ElementFromPoint(new tagPOINT { x = x, y = y });
     }
 
     internal static Task<NativeControlBinding> LocateAsync(WindowTarget target, int x, int y, CancellationToken token) =>
         UiaThread.Run(api =>
         {
             token.ThrowIfCancellationRequested();
-            if (GetAncestor(WindowFromPoint(new(x, y)), 2) != target.Handle) throw InvalidTarget();
-            VerifyWindow(target);
-            var leaf = api.ElementFromPoint(new tagPOINT { x = x, y = y });
+            var leaf = ElementAt(api, target, x, y);
             var path = GetSafePath(api, leaf, target);
             IUIAutomationElement? candidate = null;
             foreach (var item in path)
@@ -116,6 +153,17 @@ internal static class NativeControlPicker
 
     internal static InvalidOperationException InvalidTarget() => new("控件已消失或不属于原绑定窗口，请重新选择。");
 
+    // 浏览器可能在同一个 UIA Document 内切换会话，因此在支持的平台上也保存该文档的完整地址。
+    internal static string? DocumentAddress(IUIAutomationElement? document)
+    {
+        if (document == null) return null;
+        var address = document.GetCurrentPropertyValue(UIA_PropertyIds.UIA_LegacyIAccessibleValuePropertyId) as string;
+        if (string.IsNullOrEmpty(address) &&
+            document.GetCurrentPattern(UIA_PatternIds.UIA_ValuePatternId) is IUIAutomationValuePattern value)
+            address = value.CurrentValue;
+        return Uri.TryCreate(address, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" or "file" ? address : null;
+    }
+
     [StructLayout(LayoutKind.Sequential)] private readonly record struct PickPoint(int X, int Y);
     private delegate nint MouseProc(int code, nuint message, nint data);
     [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowsHookExW(int id, MouseProc proc, nint module, uint thread);
@@ -129,118 +177,48 @@ internal static class NativeControlPicker
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(PickPoint point);
 }
 
-/// <summary>UIA foreign-provider calls live on a persistent MTA, never on the WinUI dispatcher.</summary>
+/// <summary>UIA 调用在固定的 MTA 线程中串行执行。长文档的枚举使用独立队列，避免阻塞输入框的写回和发送。</summary>
 internal static class UiaThread
 {
-    private static readonly BlockingCollection<Action> Jobs = new();
-    private static IUIAutomation? _api;
+    private static readonly Lazy<Worker> Controls = new(() => new("sell fish accessibility"));
+    private static readonly Lazy<Worker> Regions = new(() => new("sell fish output regions"));
 
-    static UiaThread()
-    {
-        var thread = new Thread(() => { foreach (var job in Jobs.GetConsumingEnumerable()) job(); })
-            { IsBackground = true, Name = "sell fish accessibility" };
-        thread.SetApartmentState(ApartmentState.MTA);
-        thread.Start();
-    }
+    internal static Task<T> Run<T>(Func<IUIAutomation, T> action) => Controls.Value.Run(action);
+    internal static Task<T> ReadRegion<T>(Func<IUIAutomation, T> action) => Regions.Value.Run(action);
 
-    internal static Task<T> Run<T>(Func<IUIAutomation, T> action)
+    private sealed class Worker
     {
-        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        Jobs.Add(() =>
+        private readonly BlockingCollection<Action> _jobs = new();
+        private IUIAutomation? _api;
+
+        internal Worker(string name)
         {
-            try
-            {
-                if (_api == null)
-                {
-                    var api = (IUIAutomation2)new CUIAutomation8();
-                    api.ConnectionTimeout = 1500;
-                    api.TransactionTimeout = 1500;
-                    _api = (IUIAutomation)api;
-                }
-                completion.TrySetResult(action(_api));
-            }
-            catch (COMException ex) { completion.TrySetException(new InvalidOperationException("控件未响应或已失效，请在原窗口重新选择。", ex)); }
-            catch (Exception ex) { completion.TrySetException(ex); }
-        });
-        return completion.Task;
-    }
-}
-
-internal sealed class NativeControlBinding(WindowTarget target, IUIAutomationElement element) : IDisposable
-{
-    private const int MaxTextLength = 256 * 1024;
-    private volatile bool _closed;
-    private int[] _id = [];
-    internal string Key { get; private set; } = "";
-    internal string Label { get; private set; } = "";
-    internal string InitialText { get; private set; } = "";
-    internal bool Writable { get; private set; }
-
-    internal void Initialize(IUIAutomation api)
-    {
-        _id = element.GetRuntimeId();
-        if (_id is not { Length: > 0 }) throw NativeControlPicker.InvalidTarget();
-        Key = target.Handle.ToString("X") + ":" + string.Join(".", _id);
-        var value = ValuePattern();
-        Writable = value != null && value.CurrentIsReadOnly == 0 && element.CurrentIsEnabled != 0 &&
-            element.CurrentControlType == UIA_ControlTypeIds.UIA_EditControlTypeId;
-        InitialText = Read(api);
-        Label = LabelFor(api);
-    }
-
-    private string LabelFor(IUIAutomation api)
-    {
-        bool edit = element.CurrentControlType == UIA_ControlTypeIds.UIA_EditControlTypeId;
-        string name = "";
-        try
-        {
-            if (element.CurrentLabeledBy is { } label)
-            {
-                NativeControlPicker.GetSafePath(api, label, target);
-                name = label.CurrentName ?? "";
-            }
-            if (string.IsNullOrWhiteSpace(name) && edit) name = element.CurrentName ?? "";
+            var thread = new Thread(() => { foreach (var job in _jobs.GetConsumingEnumerable()) job(); })
+                { IsBackground = true, Name = name };
+            thread.SetApartmentState(ApartmentState.MTA);
+            thread.Start();
         }
-        catch (Exception ex) when (ex is COMException or InvalidOperationException) { /* A label is optional. */ }
-        string kind = edit ? "输入框" : "文本";
-        name = name.Trim();
-        if (name.Length == 0 || name == InitialText.Trim() || name.Contains('\n') || name.Contains('\r')) return kind;
-        return kind + " · " + (name.Length <= 24 ? name : name[..24] + "…");
+
+        internal Task<T> Run<T>(Func<IUIAutomation, T> action)
+        {
+            var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _jobs.Add(() =>
+            {
+                try
+                {
+                    if (_api == null)
+                    {
+                        var api = (IUIAutomation2)new CUIAutomation8();
+                        api.ConnectionTimeout = 1500;
+                        api.TransactionTimeout = 1500;
+                        _api = (IUIAutomation)api;
+                    }
+                    completion.TrySetResult(action(_api));
+                }
+                catch (COMException ex) { completion.TrySetException(new InvalidOperationException("控件未响应或已失效，请在原窗口重新选择。", ex)); }
+                catch (Exception ex) { completion.TrySetException(ex); }
+            });
+            return completion.Task;
+        }
     }
-
-    private IUIAutomationValuePattern? ValuePattern() =>
-        element.GetCurrentPattern(UIA_PatternIds.UIA_ValuePatternId) as IUIAutomationValuePattern;
-
-    private string Read(IUIAutomation api)
-    {
-        ObjectDisposedException.ThrowIf(_closed, this);
-        NativeControlPicker.GetSafePath(api, element, target);
-        if (!_id.SequenceEqual(element.GetRuntimeId())) throw NativeControlPicker.InvalidTarget();
-        var value = ValuePattern();
-        string text;
-        if (value != null) text = value.CurrentValue ?? "";
-        else if (element.GetCurrentPattern(UIA_PatternIds.UIA_TextPatternId) is IUIAutomationTextPattern document)
-            text = document.DocumentRange.GetText(MaxTextLength + 1) ?? "";
-        else if (element.CurrentControlType == UIA_ControlTypeIds.UIA_TextControlTypeId) text = element.CurrentName ?? "";
-        else throw new InvalidOperationException("这个控件没有公开可读取的文本。");
-        if (text.Length > MaxTextLength) throw new InvalidOperationException("控件文字过长，请选择较小的文本区域。");
-        return text;
-    }
-
-    internal Task<string> ReadAsync() => UiaThread.Run(Read);
-    internal Task<string> WriteAsync(string expected, string replacement) => UiaThread.Run(api =>
-    {
-        if (replacement.Length > MaxTextLength) throw new InvalidOperationException("输入内容过长。");
-        if (Read(api) != expected) throw new InvalidOperationException("原控件已更改。请先重新载入原文，再编辑写回。");
-        var value = ValuePattern();
-        if (!Writable || value == null || value.CurrentIsReadOnly != 0 || element.CurrentIsEnabled == 0)
-            throw new InvalidOperationException("该控件当前不能写入。");
-        ObjectDisposedException.ThrowIf(_closed, this);
-        value.SetValue(replacement);
-        string accepted = Read(api);
-        if (accepted != replacement) throw new InvalidOperationException("原应用未接受完整文字。可重新载入实际内容。");
-        return accepted;
-    });
-
-    public void Dispose() => _closed = true;
 }
