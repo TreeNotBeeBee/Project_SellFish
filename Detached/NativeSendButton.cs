@@ -4,7 +4,7 @@ using Interop.UIAutomationClient;
 namespace WindowPilot;
 
 internal sealed class SendButtonSelectionRequiredException(string message)
-    : InvalidOperationException("草稿已写回，尚未发送。" + message);
+    : InvalidOperationException("草稿已写回，尚未发送。" + message + "请在右上角「⋯」中选择「选择发送按钮」。");
 internal sealed class SendOutcomeUnknownException(string message, Exception cause) : InvalidOperationException(message, cause);
 
 internal sealed partial class NativeControlBinding
@@ -12,7 +12,6 @@ internal sealed partial class NativeControlBinding
     private sealed record SelectedButton(IUIAutomationElement Element, int[] RuntimeId, string Name);
     private volatile SelectedButton? _button;
     private int _sending;
-    internal bool HasSendButton => _button != null;
 
     internal async Task AttachSendButtonAsync(CancellationToken token)
     {
@@ -24,7 +23,7 @@ internal sealed partial class NativeControlBinding
     {
         token.ThrowIfCancellationRequested();
         var leaf = NativeControlPicker.ElementAt(api, target, x, y);
-        var path = NativeControlPicker.GetSafePath(api, leaf, target);
+        var path = NativeControlPicker.GetHitPath(api, target, leaf, x, y);
         var button = path.FirstOrDefault(item => item.CurrentControlType == UIA_ControlTypeIds.UIA_ButtonControlTypeId);
         if (button == null) throw new InvalidOperationException("请点选原窗口中实际用于发送的按钮。");
         token.ThrowIfCancellationRequested();
@@ -71,7 +70,7 @@ internal sealed partial class NativeControlBinding
         if (button == null || button.CurrentIsEnabled == 0)
         {
             if (!lastAttempt) return false;
-            if (button == null) throw new SendButtonSelectionRequiredException("请点「选择发送按钮」，再点原窗口中的发送按钮。");
+            if (button == null) throw new SendButtonSelectionRequiredException("未能识别原窗口的发送按钮。");
             throw new InvalidOperationException("草稿已写回，尚未发送。原窗口的发送按钮还不可用。");
         }
         if (Read(api) != expected) throw new InvalidOperationException("发送前原输入框已改变，草稿已保留。");
@@ -79,12 +78,12 @@ internal sealed partial class NativeControlBinding
         string? name = button.CurrentName;
         if ((_button is { } bound ? name != bound.Name : !IsSendName(name)) || button.CurrentIsEnabled == 0 ||
             button.GetCurrentPattern(UIA_PatternIds.UIA_InvokePatternId) is not IUIAutomationInvokePattern action)
-            throw new SendButtonSelectionRequiredException("发送按钮已改变，请核对原窗口后重选。");
+            throw new SendButtonSelectionRequiredException("发送按钮已改变。");
         ObjectDisposedException.ThrowIf(_closed, this);
         try { action.Invoke(); }
         catch (COMException ex)
         {
-            throw new SendOutcomeUnknownException("按钮调用结果不明确。请在原窗口核对后再决定是否发送。", ex);
+            throw new SendOutcomeUnknownException("发送结果待确认。请先在原窗口核对消息，再点「⋯ → 重新载入」。", ex);
         }
         return true;
     }
@@ -99,7 +98,7 @@ internal sealed partial class NativeControlBinding
                 SameDocument(api, _document, DocumentFor(NativeControlPicker.GetSafePath(api, button, target)))) return button;
         }
         catch (Exception ex) when (ex is COMException or InvalidOperationException) { /* 原按钮被重新渲染。 */ }
-        throw new SendButtonSelectionRequiredException("原发送按钮已变更。请重新选择发送按钮。");
+        throw new SendButtonSelectionRequiredException("原发送按钮已变更。");
     }
 
     private IUIAutomationElement? FindFormButton(IUIAutomation api, List<IUIAutomationElement> path)
@@ -118,7 +117,7 @@ internal sealed partial class NativeControlBinding
             {
                 var b = buttons.GetElement(i);
                 if (!IsSendName(b.CurrentName)) continue;
-                if (match != null) throw new SendButtonSelectionRequiredException("表单内有多个发送按钮，请手动选择。");
+                if (match != null) throw new SendButtonSelectionRequiredException("表单内有多个发送按钮。");
                 if (SameDocument(api, _document, DocumentFor(NativeControlPicker.GetSafePath(api, b, target)))) match = b;
             }
             if (match != null) return match;

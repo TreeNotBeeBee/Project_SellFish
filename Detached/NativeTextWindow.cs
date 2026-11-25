@@ -1,5 +1,6 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using VirtualKey = Windows.System.VirtualKey;
 
@@ -9,13 +10,13 @@ internal sealed class NativeTextWindow : DetachedWindow
 {
     private readonly NativeControlBinding _binding;
     private readonly TextBox _text = new() { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
-    private readonly Button _apply = new() { Content = "写回原控件" };
-    private readonly Button _reload = new() { Content = "重新载入" };
-    private readonly Button _pickSend = new() { Content = "选择发送按钮" };
-    private readonly Button _send = new() { Content = "发送" };
+    private readonly MenuFlyoutItem _apply = new() { Text = "写回原控件" };
+    private readonly MenuFlyoutItem _reload = new() { Text = "重新载入" };
+    private readonly MenuFlyoutItem _pickSend = new() { Text = "选择发送按钮" };
+    private readonly MenuFlyoutItem _send = new() { Text = "发送", KeyboardAcceleratorTextOverride = "Enter" };
     private readonly CancellationTokenSource _lifetime = new();
     private readonly DispatcherQueueTimer _timer;
-    private bool _reading, _acting, _closed, _unavailable, _composing, _needsReview, _sentBefore;
+    private bool _reading, _acting, _closed, _unavailable, _composing, _needsReview;
     private int _revision;
     private long _compositionEnded;
     private string? _submitted;
@@ -35,16 +36,10 @@ internal sealed class NativeTextWindow : DetachedWindow
         Layout.Children.Add(_text);
         if (binding.Writable)
         {
-            var actions = AddActions();
-            actions.Children.Add(_reload);
-            actions.Children.Add(_apply);
-            actions.Children.Add(_pickSend);
-            actions.Children.Add(_send);
-            Identify(_apply, "ApplyNativeText", "写回原控件");
-            Identify(_reload, "ReloadNativeText", "重新载入原文");
-            Identify(_pickSend, "PickSendButton", "选择原窗口的发送按钮");
-            Identify(_send, "SendNativeText", "发送");
-            ToolTipService.SetToolTip(_send, "Ctrl+Enter 发送。选定发送按钮或成功发送过后，Enter 发送，Shift+Enter 换行。");
+            const string hint = "Enter 发送，Shift+Enter 换行";
+            _text.PlaceholderText = hint;
+            AutomationProperties.SetHelpText(_text, hint);
+            AddOptionsMenu();
             _apply.Click += async (_, _) => await RunActionAsync(ApplyAsync);
             _pickSend.Click += async (_, _) => await RunActionAsync(PickSendButtonAsync);
             _send.Click += async (_, _) => await RunActionAsync(SendAsync);
@@ -63,13 +58,15 @@ internal sealed class NativeTextWindow : DetachedWindow
             });
             _text.TextCompositionStarted += (_, _) => { _composing = true; UpdateActions(); };
             _text.TextCompositionEnded += (_, _) => { _composing = false; _compositionEnded = Environment.TickCount64; UpdateActions(); };
+            // 输入法可能先结束组词，再把用于选词的同一次回车交给 TextBox。松键后，下一次回车即可发送。
+            _text.PreviewKeyUp += (_, e) =>
+            {
+                if (e.Key == VirtualKey.Enter || !KeyHeld(VirtualKey.Enter)) _compositionEnded = 0;
+            };
             _text.PreviewKeyDown += async (_, e) =>
             {
-                if (e.Key != VirtualKey.Enter || _composing || KeyHeld(VirtualKey.Shift)) return;
-                // 普通编辑器仍用回车换行，确认过发送目标的浮窗才采用聊天框的回车行为。
-                if (!KeyHeld(VirtualKey.Control) && !_binding.HasSendButton && !_sentBefore) return;
+                if (e.Key != VirtualKey.Enter || _composing || KeyHeld(VirtualKey.Shift) || KeyHeld(VirtualKey.Menu)) return;
                 e.Handled = true;
-                // 输入法有时先结束组词，再把同一次回车交给 TextBox。
                 if (_send.IsEnabled && !e.KeyStatus.WasKeyDown && Environment.TickCount64 - _compositionEnded > 180)
                     await RunActionAsync(SendAsync);
             };
@@ -87,6 +84,34 @@ internal sealed class NativeTextWindow : DetachedWindow
             _binding.Dispose();
             _lifetime.Dispose();
         };
+    }
+
+    private void AddOptionsMenu()
+    {
+        var menu = new MenuFlyout();
+        menu.Items.Add(_send);
+        menu.Items.Add(new MenuFlyoutSeparator());
+        menu.Items.Add(_apply);
+        menu.Items.Add(_reload);
+        menu.Items.Add(_pickSend);
+        Identify(_send, "SendNativeText", "发送");
+        Identify(_apply, "ApplyNativeText", "写回原控件");
+        Identify(_reload, "ReloadNativeText", "重新载入原文");
+        Identify(_pickSend, "PickSendButton", "选择原窗口的发送按钮");
+
+        var options = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE712", FontSize = 16 },
+            Flyout = menu, VerticalAlignment = VerticalAlignment.Top,
+            Width = 32, Height = 32, Padding = new Thickness(0)
+        };
+        Identify(options, "NativeTextOptions", "更多操作");
+        ToolTipService.SetToolTip(options, "更多操作");
+        Layout.ColumnDefinitions.Add(new ColumnDefinition());
+        Layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Layout.ColumnSpacing = 4;
+        Grid.SetColumn(options, 1);
+        Layout.Children.Add(options);
     }
 
     private bool Dirty => Normalized(_text.Text) != Normalized(_baseText);
@@ -124,11 +149,16 @@ internal sealed class NativeTextWindow : DetachedWindow
             _latest = latest;
             if (!_needsReview)
             {
-                if (_submitted != null && Normalized(latest) != _submitted) _submitted = null;
+                if (_submitted != null && Normalized(latest) != _submitted)
+                {
+                    // 发送后原应用清空输入框时，用户可能已经在浮窗起草下一条消息。
+                    if (latest.Length == 0 && Dirty) _baseText = latest;
+                    _submitted = null;
+                }
                 if (Normalized(latest) == Normalized(_text.Text)) _baseText = latest;
                 else if (Conflict && !Dirty && !_composing) Load(latest);
             }
-            SetStatus(_actionStatus ?? (Conflict ? "原控件已更改。浮窗保留了你的文字，可复制后重新载入。" : ""));
+            SetStatus(_actionStatus ?? (Conflict ? "原控件已更改。可复制浮窗草稿，再点「⋯ → 重新载入」。" : ""));
         }
         catch (Exception ex)
         {
@@ -192,7 +222,6 @@ internal sealed class NativeTextWindow : DetachedWindow
             throw;
         }
         if (_closed) return;
-        _sentBefore = true;
         _submitted = Normalized(draft);
         _baseText = _latest = draft;
         _actionStatus = "已触发原窗口的发送按钮。";

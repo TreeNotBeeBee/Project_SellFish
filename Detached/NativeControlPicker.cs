@@ -4,32 +4,33 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Interop.UIAutomationClient;
 using Microsoft.UI.Dispatching;
+using static Interop.UIAutomationClient.UIA_ControlTypeIds;
 
 namespace WindowPilot;
+
+internal interface INativeTextSource : IDisposable
+{
+    string Key { get; }
+    string Label { get; }
+}
 
 internal static class NativeControlPicker
 {
     private static int _picking;
 
-    internal static async Task<NativeControlBinding> PickAsync(WindowTarget target, CancellationToken token)
+    internal static async Task<INativeTextSource> PickAsync(WindowTarget target, CancellationToken token, bool outputRegion)
     {
         var point = await PickPointAsync(target, token);
-        return await LocateAsync(target, point.X, point.Y, token);
+        return await LocateAsync(target, point.X, point.Y, token, outputRegion);
     }
 
-    internal static async Task<NativeTextRegion> PickRegionAsync(WindowTarget target, CancellationToken token)
-    {
-        var point = await PickPointAsync(target, token);
-        return await LocateRegionAsync(target, point.X, point.Y, token);
-    }
-
-    internal static Task<NativeTextRegion> LocateRegionAsync(WindowTarget target, int x, int y, CancellationToken token) =>
+    internal static Task<INativeTextSource> LocateAsync(WindowTarget target, int x, int y, CancellationToken token, bool outputRegion = false) =>
         UiaThread.ReadRegion(api =>
         {
             token.ThrowIfCancellationRequested();
-            var region = NativeTextRegion.Create(api, target, ElementAt(api, target, x, y));
-            if (token.IsCancellationRequested) { region.Dispose(); token.ThrowIfCancellationRequested(); }
-            return region;
+            var source = LocateElement(api, target, ElementAt(api, target, x, y), x, y, outputRegion);
+            if (token.IsCancellationRequested) { source.Dispose(); token.ThrowIfCancellationRequested(); }
+            return source;
         });
 
     internal static async Task<(int X, int Y)> PickPointAsync(WindowTarget target, CancellationToken token)
@@ -97,32 +98,100 @@ internal static class NativeControlPicker
     {
         if (GetAncestor(WindowFromPoint(new(x, y)), 2) != target.Handle) throw InvalidTarget();
         VerifyWindow(target);
-        return api.ElementFromPoint(new tagPOINT { x = x, y = y });
+        var point = new tagPOINT { x = x, y = y };
+        var leaf = api.ElementFromPoint(point);
+        if (target.ClassName.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal) || leaf.CurrentFrameworkId == "Chrome")
+        {
+            // Chromium 异步通知渲染进程进行命中测试，第一次调用可能返回上一次点选的节点。
+            // 即使它是有效控件也要再取一次，防止把另一个编辑框或按钮绑到本次点击。
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                Thread.Sleep(55);
+                if (GetAncestor(WindowFromPoint(new(x, y)), 2) != target.Handle) throw InvalidTarget();
+                leaf = api.ElementFromPoint(point);
+                if (Contains(leaf.CurrentBoundingRectangle, x, y)) break;
+            }
+        }
+        return leaf;
     }
 
-    internal static Task<NativeControlBinding> LocateAsync(WindowTarget target, int x, int y, CancellationToken token) =>
-        UiaThread.Run(api =>
+    internal static INativeTextSource LocateElement(IUIAutomation api, WindowTarget target, IUIAutomationElement leaf,
+        int x, int y, bool outputRegion = false)
+    {
+        var path = GetHitPath(api, target, leaf, x, y);
+        var document = path.FirstOrDefault(e => e.CurrentControlType == UIA_DocumentControlTypeId);
+        IUIAutomationElement? candidate = null;
+        foreach (var item in path)
         {
-            token.ThrowIfCancellationRequested();
-            var leaf = ElementAt(api, target, x, y);
-            var path = GetSafePath(api, leaf, target);
-            IUIAutomationElement? candidate = null;
-            foreach (var item in path)
+            int type = item.CurrentControlType;
+            if (type == UIA_EditControlTypeId) { candidate = item; break; }
+            if (type is UIA_TextControlTypeId or UIA_DocumentControlTypeId)
             {
-                int type = item.CurrentControlType;
-                if (type == UIA_ControlTypeIds.UIA_EditControlTypeId) { candidate = item; break; }
-                if (type == UIA_ControlTypeIds.UIA_TextControlTypeId || type == UIA_ControlTypeIds.UIA_DocumentControlTypeId)
-                    candidate ??= item;
-                else if (type != UIA_ControlTypeIds.UIA_CustomControlTypeId && type != UIA_ControlTypeIds.UIA_PaneControlTypeId
-                    && type != UIA_ControlTypeIds.UIA_GroupControlTypeId)
-                    break;
+                candidate ??= item;
+                if (type == UIA_DocumentControlTypeId) break;
             }
-            if (candidate == null) throw new InvalidOperationException("这个控件没有公开受支持的文本接口。");
-            var binding = new NativeControlBinding(target, candidate);
-            binding.Initialize(api);
-            token.ThrowIfCancellationRequested();
-            return binding;
-        });
+            else if (type is not (UIA_CustomControlTypeId or UIA_PaneControlTypeId or UIA_GroupControlTypeId))
+                break;
+        }
+        if (outputRegion || (document != null && candidate?.CurrentControlType != UIA_EditControlTypeId && IsWebDocument(document)))
+            return NativeTextRegion.Create(api, target, path);
+        if (candidate == null) throw new InvalidOperationException("这个控件没有公开受支持的文本接口。");
+        var binding = new NativeControlBinding(target, candidate);
+        binding.Initialize(api);
+        return binding;
+    }
+
+    private static bool IsWebDocument(IUIAutomationElement document) =>
+        document.CurrentFrameworkId is "Chrome" or "Gecko" || DocumentAddress(document) != null;
+
+    internal static List<IUIAutomationElement> GetHitPath(IUIAutomation api, WindowTarget target,
+        IUIAutomationElement leaf, int x, int y)
+    {
+        var path = GetSafePath(api, leaf, target);
+        bool inBounds = Contains(leaf.CurrentBoundingRectangle, x, y);
+        if (inBounds && leaf.CurrentControlType != UIA_DocumentControlTypeId) return path;
+        var document = path.FirstOrDefault(e => e.CurrentControlType == UIA_DocumentControlTypeId);
+        if (document != null && IsWebDocument(document))
+        {
+            // Document 的 Value 是网址。按坐标沿原文档向下找，既能取正文，也能保留实际编辑框和按钮。
+            if (!Contains(document.CurrentBoundingRectangle, x, y)) throw InvalidTarget();
+            return GetSafePath(api, DescendantAtPoint(api, document, x, y), target);
+        }
+        if (!inBounds && (target.ClassName.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal) || leaf.CurrentFrameworkId == "Chrome"))
+            throw new InvalidOperationException("浏览器正在更新控件位置，请重新点选。");
+        return path;
+    }
+
+    private static bool Contains(tagRECT rect, int x, int y) =>
+        x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+
+    private static IUIAutomationElement DescendantAtPoint(IUIAutomation api, IUIAutomationElement document, int x, int y)
+    {
+        var raw = api.RawViewCondition;
+        var cache = api.CreateCacheRequest();
+        cache.TreeFilter = raw;
+        cache.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
+        cache.AddProperty(UIA_PropertyIds.UIA_IsOffscreenPropertyId);
+        var current = document;
+        // 原始树包含段落和静态文字。只枚举落点所在的分支；同层容器重叠时取覆盖落点的最小矩形。
+        for (int depth = 0; depth < 64; depth++)
+        {
+            var children = current.FindAllBuildCache(TreeScope.TreeScope_Children, raw, cache);
+            IUIAutomationElement? hit = null;
+            double smallest = double.MaxValue;
+            for (int i = 0, count = children.Length; i < count; i++)
+            {
+                var child = children.GetElement(i);
+                var rect = child.CachedBoundingRectangle;
+                if (child.CachedIsOffscreen != 0 || !Contains(rect, x, y)) continue;
+                double area = ((double)rect.right - rect.left) * ((double)rect.bottom - rect.top);
+                if (area <= smallest) { smallest = area; hit = child; }
+            }
+            if (hit == null) break;
+            current = hit;
+        }
+        return current;
+    }
 
     internal static List<IUIAutomationElement> GetSafePath(IUIAutomation api, IUIAutomationElement leaf, WindowTarget target)
     {

@@ -3,7 +3,7 @@ using Interop.UIAutomationClient;
 
 namespace WindowPilot;
 
-internal sealed partial class NativeControlBinding(WindowTarget target, IUIAutomationElement element) : IDisposable
+internal sealed partial class NativeControlBinding(WindowTarget target, IUIAutomationElement element) : INativeTextSource
 {
     private const int MaxTextLength = 256 * 1024;
     private volatile bool _closed;
@@ -11,8 +11,8 @@ internal sealed partial class NativeControlBinding(WindowTarget target, IUIAutom
     private IUIAutomationElement? _document;
     private string? _webAddress;
     private bool _proseMirror;
-    internal string Key { get; private set; } = "";
-    internal string Label { get; private set; } = "";
+    public string Key { get; private set; } = "";
+    public string Label { get; private set; } = "";
     internal string InitialText { get; private set; } = "";
     internal bool Writable { get; private set; }
 
@@ -74,12 +74,14 @@ internal sealed partial class NativeControlBinding(WindowTarget target, IUIAutom
     private string Read(IUIAutomation api)
     {
         Validate(api);
-        var value = ValuePattern();
         string text;
-        if (value != null) text = value.CurrentValue ?? "";
+        // 编辑框的值就是草稿，非编辑文档的 Value 却可能只是地址；文档正文由 TextPattern 提供。
+        if (element.CurrentControlType != UIA_ControlTypeIds.UIA_DocumentControlTypeId && ValuePattern() is { } controlValue)
+            text = controlValue.CurrentValue ?? "";
         else if (element.GetCurrentPattern(UIA_PatternIds.UIA_TextPatternId) is IUIAutomationTextPattern document)
             text = document.DocumentRange.GetText(MaxTextLength + 1) ?? "";
         else if (element.CurrentControlType == UIA_ControlTypeIds.UIA_TextControlTypeId) text = element.CurrentName ?? "";
+        else if (_webAddress == null && ValuePattern() is { } nativeValue) text = nativeValue.CurrentValue ?? "";
         else throw new InvalidOperationException("这个控件没有公开可读取的文本。");
         if (text.Length > MaxTextLength) throw new InvalidOperationException("控件文字过长，请选择较小的文本区域。");
         if (_proseMirror && text.EndsWith('\n') && HasTrailingFiller(api, text)) text = text[..^1];

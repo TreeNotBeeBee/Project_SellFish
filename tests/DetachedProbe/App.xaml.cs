@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
-using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using WinRT.Interop;
 
@@ -48,7 +48,7 @@ public partial class App : Application
             {
                 nint child = GetDlgItem(hwnd, id);
                 if (!GetWindowRect(child, out var r)) throw new Exception("Fixture control not created");
-                return await NativeControlPicker.LocateAsync(target, (r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2, default);
+                return (NativeControlBinding)await NativeControlPicker.LocateAsync(target, (r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2, default);
             }
             using var writable = await Pick(1);
             Check(writable.Writable && writable.InitialText == "initial", "Win32 Edit discovered");
@@ -75,14 +75,17 @@ public partial class App : Application
             }
             var editGrid = (Grid)editor.Content;
             var editBox = editGrid.Children.OfType<TextBox>().Single();
-            var actions = editGrid.Children.OfType<StackPanel>().Single();
-            var apply = actions.Children.OfType<Button>().Single(b => (string)b.Content == "写回原控件");
-            var reload = actions.Children.OfType<Button>().Single(b => (string)b.Content == "重新载入");
+            var options = editGrid.Children.OfType<Button>().Single();
+            Check(AutomationProperties.GetAutomationId(options) == "NativeTextOptions" && Grid.GetRow(options) == 0,
+                "editable float has one menu beside the editor");
+            var actions = ((MenuFlyout)options.Flyout).Items.OfType<MenuFlyoutItem>();
+            var apply = actions.Single(item => AutomationProperties.GetAutomationId(item) == "ApplyNativeText");
+            var reload = actions.Single(item => AutomationProperties.GetAutomationId(item) == "ReloadNativeText");
             var refBox = ((Grid)reference.Content).Children.OfType<TextBox>().Single();
             Check(!editBox.IsReadOnly && refBox.IsReadOnly, "detached editors honor source capabilities");
             Check(editBox.Text == "输入中文" && refBox.Text == "reference", "each detached window displays its own source");
             editBox.Text = "浮窗写回";
-            Invoke(apply);
+            new MenuFlyoutItemAutomationPeer(apply).Invoke();
             await Wait(() => !editBox.IsReadOnly && !apply.IsEnabled);
             Check(await writable.ReadAsync() == "浮窗写回", "apply updates the external native control");
             editBox.Text = "未保存的编辑";
@@ -90,7 +93,7 @@ public partial class App : Application
             SetFixtureText(hwnd, 2, "只读值也已更新");
             await Wait(() => refBox.Text == "只读值也已更新" && !apply.IsEnabled && reload.IsEnabled);
             Check(editBox.Text == "未保存的编辑" && await writable.ReadAsync() == "外部更新", "conflicting text retained on both sides");
-            Invoke(reload);
+            new MenuFlyoutItemAutomationPeer(reload).Invoke();
             await Wait(() => editBox.Text == "外部更新");
             Check(GetForegroundWindow() == foreground, "showing and refreshing detached controls preserve foreground");
 
@@ -124,9 +127,6 @@ public partial class App : Application
         if (!ok) throw new Exception(name);
         _log.Add(name);
     }
-    private static void Invoke(Button button) =>
-        ((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
-
     private static async Task Wait(Func<bool> ready)
     {
         for (int tries = 0; tries < 80; tries++)

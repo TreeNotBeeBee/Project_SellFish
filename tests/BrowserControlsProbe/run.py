@@ -87,6 +87,7 @@ def browser_window():
 
 def provider_baseline(hwnd, state):
     from pywinauto import Desktop
+    from pywinauto.uia_element_info import UIAElementInfo
     window = Desktop(backend="uia").window(handle=hwnd)
     edit = window.child_window(control_type="Document").child_window(control_type="Edit").wrapper_object()
     element = edit.element_info.element
@@ -94,6 +95,13 @@ def provider_baseline(hwnd, state):
           repr(element.CurrentClassName), element.CurrentAriaRole, element.CurrentAriaProperties, state)
     doc = window.child_window(control_type="Document").wrapper_object()
     print("Document legacy value exposes URL", str(doc.element_info.element.GetCurrentPropertyValue(30093)).startswith("http://127.0.0.1:"))
+    for wrapper in (doc, edit, window.child_window(title="First paragraph", control_type="Text").wrapper_object()):
+        rect = wrapper.rectangle()
+        x, y = (rect.left + 3, rect.bottom - 8) if wrapper is doc else (rect.left + 3, (rect.top + rect.bottom) // 2)
+        for delay in (0, 0.05, 0.15):
+            time.sleep(delay)
+            hit = UIAElementInfo.from_point(x, y)
+            print("Hit", x, y, delay, hit.control_type, hit.name)
     for name in ["First paragraph", "Latest answer", "发送"]:
         item = window.child_window(title=name, found_index=0).wrapper_object()
         path = []
@@ -109,13 +117,30 @@ def provider_baseline(hwnd, state):
         print("SetValue", repr(value), "UIA", repr(edit.iface_value.CurrentValue), "editor", state, flush=True)
 
 
+def document_point(document, origin):
+    """Find a real hit on Chromium's Document, whose accessibility value is its URL."""
+    from pywinauto.uia_element_info import UIAElementInfo
+    wrapper = document.wrapper_object()
+    element = wrapper.element_info.element
+    address = element.GetCurrentPropertyValue(30093)  # LegacyIAccessible.Value
+    if address != origin + "/":
+        raise AssertionError(f"Unexpected test document address: {address!r}")
+    rect = wrapper.rectangle()
+    for y in (rect.bottom - 12, (rect.top + rect.bottom) // 2, rect.top + 1):
+        for x in ((rect.left + rect.right) // 2, rect.left + 4, rect.right - 20):
+            if UIAElementInfo.from_point(x, y).control_type == "Document":
+                return x, y
+    raise AssertionError("Browser provider did not expose a Document hit in the test viewport")
+
+
 def child(args, root):
     import contextlib
     with (root / "driver.log").open("w", encoding="utf8") as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
         server, state = serve(args.bundle)
         origin = "http://127.0.0.1:" + str(server.server_port)
+        flags = ["--force-renderer-accessibility"] if args.force_accessibility else []
         proc = subprocess.Popen([str(args.browser), "--user-data-dir=" + str(root / "profile"), "--no-first-run",
-                                 "--no-default-browser-check", "--disable-extensions", "--force-renderer-accessibility",
+                                 "--no-default-browser-check", "--disable-extensions", *flags,
                                  "--window-size=930,750", "--app=" + origin])
         hwnd = 0
         try:
@@ -134,6 +159,7 @@ def child(args, root):
                 for control in controls:
                     rect = control.wrapper_object().rectangle()
                     points.extend([rect.left + 3, (rect.top + rect.bottom) // 2])
+                points.extend(document_point(document, origin))
                 env = dict(os.environ, SELL_FISH_CHROMIUM_HWND=str(hwnd), SELL_FISH_CHROMIUM_ORIGIN=origin,
                            SELL_FISH_CHROMIUM_POINTS=",".join(map(str, points)),
                            SELL_FISH_CHROMIUM_SEND="automatic" if args.automatic else "explicit",
@@ -208,6 +234,7 @@ if __name__ == "__main__":
     parser.add_argument("--browser", type=Path, required=True)
     parser.add_argument("--bundle", type=Path, required=True, help="Bundled editor.js with ProseMirror")
     parser.add_argument("--automatic", action="store_true", help="Use the paired editor's local form to locate Send")
+    parser.add_argument("--force-accessibility", action="store_true", help="Force Chromium accessibility at startup")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--probe", type=Path)
     mode.add_argument("--baseline", action="store_true")

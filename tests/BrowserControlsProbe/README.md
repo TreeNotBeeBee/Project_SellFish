@@ -17,4 +17,6 @@ python -X utf8 tests/BrowserControlsProbe/run.py --browser $chrome --bundle $bun
 python -X utf8 tests/BrowserControlsProbe/run.py --browser $chrome --bundle $bundle --probe $probe --automatic
 ```
 
-第一轮显式关联用户所选的发送按钮，第二轮让程序从原输入框所在的表单中识别。将 `--browser` 换成 Edge 可执行文件路径可运行同一组测试。用 `--baseline` 替换 `--probe $probe` 会输出未经 sell fish 处理的 UIA 值和网页文档值，可用于复核占位换行。生成的第三方 JavaScript 仅供测试使用。
+第一轮显式关联用户所选的发送按钮，第二轮让程序从原输入框所在的表单中识别。两轮都向独立桌面中聚焦的浮窗投递键盘消息，验证第一次普通 Enter 发送、Shift+Enter 换行，并核对原网页实际收到的两行内容。点选测试覆盖普通段落、可访问值为网址的文档根节点，以及浏览器只返回整个文档时按坐标找回原段落。
+
+将 `--browser` 换成 Edge 可执行文件路径可运行同一组测试。浏览器默认按自身设置启用可访问性；可加 `--force-accessibility` 检查强制启用的情形。用 `--baseline` 替换 `--probe $probe` 会输出原始 UIA 值、连续命中测试结果以及网页文档值，可复核 Chromium 的命中延迟和占位换行。生成的第三方 JavaScript 仅供测试使用。

@@ -12,8 +12,12 @@ namespace WindowPilot;
 
 internal abstract class DetachedWindow : Window
 {
-    protected readonly Grid Layout = new() { Padding = new Thickness(12), RowSpacing = 8 };
-    private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, Visibility = Visibility.Collapsed };
+    protected readonly Grid Layout = new() { Padding = new Thickness(12) };
+    private readonly TextBlock _status = new()
+    {
+        TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(0, 8, 0, 0),
+        Visibility = Visibility.Collapsed
+    };
     private readonly nint _hwnd;
 
     protected DetachedWindow(string title, int width, int height, bool lower)
@@ -22,8 +26,8 @@ internal abstract class DetachedWindow : Window
         _hwnd = WindowNative.GetWindowHandle(this);
         Layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(_status, 2);
+        Grid.SetRow(_status, 1);
+        Grid.SetColumnSpan(_status, 2);
         AutomationProperties.SetLiveSetting(_status, AutomationLiveSetting.Polite);
         Layout.Children.Add(_status);
         Content = Layout;
@@ -71,14 +75,6 @@ internal abstract class DetachedWindow : Window
     {
         AutomationProperties.SetAutomationId(element, id);
         AutomationProperties.SetName(element, label);
-    }
-
-    protected StackPanel AddActions()
-    {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
-        Grid.SetRow(row, 1);
-        Layout.Children.Add(row);
-        return row;
     }
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint hwnd);

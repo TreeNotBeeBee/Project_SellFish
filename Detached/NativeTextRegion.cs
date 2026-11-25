@@ -7,7 +7,7 @@ using static Interop.UIAutomationClient.UIA_PropertyIds;
 namespace WindowPilot;
 
 // 选中的区域是稳定的祖先元素。网页逐段替换子节点时，下一次读取仍从这个祖先开始。
-internal sealed class NativeTextRegion : IDisposable, IUIAutomationEventHandler,
+internal sealed class NativeTextRegion : INativeTextSource, IUIAutomationEventHandler,
     IUIAutomationStructureChangedEventHandler, IUIAutomationPropertyChangedEventHandler
 {
     private sealed record Scope(IUIAutomationElement Element, int[] RuntimeId, string Role, string Title);
@@ -21,8 +21,8 @@ internal sealed class NativeTextRegion : IDisposable, IUIAutomationEventHandler,
     internal event Action? Changed;
     internal IReadOnlyList<string> Scopes { get; }
     internal int SelectedIndex => Volatile.Read(ref _selected);
-    internal string Label { get; }
-    internal string Key { get; }
+    public string Label { get; }
+    public string Key { get; }
     internal string InitialText { get; private set; } = "";
 
     private NativeTextRegion(WindowTarget target, Scope[] scopes, int selected, IUIAutomationElement? document)
@@ -38,9 +38,8 @@ internal sealed class NativeTextRegion : IDisposable, IUIAutomationEventHandler,
         Key = $"region:{target.Handle:X}:{string.Join(".", scopes[0].RuntimeId)}";
     }
 
-    internal static NativeTextRegion Create(IUIAutomation api, WindowTarget target, IUIAutomationElement leaf)
+    internal static NativeTextRegion Create(IUIAutomation api, WindowTarget target, List<IUIAutomationElement> path)
     {
-        var path = NativeControlPicker.GetSafePath(api, leaf, target);
         var scopes = new List<Scope>();
         IUIAutomationElement? document = null;
         foreach (var item in path.Take(path.Count - 1))
@@ -72,22 +71,25 @@ internal sealed class NativeTextRegion : IDisposable, IUIAutomationEventHandler,
             if (isDocument) { document = item; break; }
         }
         if (scopes.Count == 0) throw new InvalidOperationException("这里没有可选择的文本区域。");
-        int selected = scopes.FindIndex(s => s.Role is "article" or "log" or "feed" or "region");
+        // 对话的每个回合常是独立 article。优先跟踪外层消息区域，这样下一条回答也在浮窗里。
+        int article = scopes.FindIndex(s => s.Role == "article");
+        int selected = scopes.FindIndex(s => s.Role is "log" or "feed");
+        if (selected < 0) selected = scopes.FindIndex(Math.Max(article, 0), s => s.Role == "region");
         if (selected < 0) selected = scopes.FindIndex(s => s.Role == "main");
+        if (selected < 0) selected = article;
         if (selected < 0) selected = scopes.FindIndex(s => s.Element.CurrentControlType == UIA_GroupControlTypeId);
         if (selected < 0) selected = 0;
         var areas = scopes.ToArray();
-        var region = new NativeTextRegion(target, areas, selected, document);
-        try { region.InitialText = region.Read(api, selected); }
-        catch (RegionSizeException) when (selected > 0)
+        // 长对话超过单窗上限时，先尝试当前回答，最后才收窄到点选文字。
+        foreach (int index in new[] { selected, article > 0 && article < selected ? article : 0, 0 }.Distinct())
         {
-            // 长文档仍可从落点开始阅读，在浮窗内挑选适合的祖先，不必盲目再次点选。
-            selected = 0;
-            region = new NativeTextRegion(target, areas, selected, document);
-            region.InitialText = region.Read(api, selected);
+            var region = new NativeTextRegion(target, areas, index, document);
+            try { region.InitialText = region.Read(api, index); }
+            catch (RegionSizeException) when (index != 0) { continue; }
+            region.Watch(api, scopes[index].Element);
+            return region;
         }
-        region.Watch(api, scopes[selected].Element);
-        return region;
+        throw new RegionSizeException();
     }
 
     internal Task<string> SelectScopeAsync(int index) => UiaThread.ReadRegion(api =>

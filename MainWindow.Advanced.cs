@@ -59,7 +59,7 @@ public sealed partial class MainWindow
         PickControl.IsEnabled = PickRegion.IsEnabled = unavailable == null && _picking == null;
         string hint = unavailable ?? (_picking != null
             ? "单击目标窗口中的文字或控件，按 Esc 取消。"
-            : "阅读多段文字时，选择输出区域，再点击其中一段。");
+            : "选择控件后，点输入框可编辑，点网页正文可跟随阅读。");
         if (AdvancedHint.Text != hint) AdvancedHint.Text = hint;
     }
 
@@ -74,30 +74,25 @@ public sealed partial class MainWindow
         RefreshAdvancedControls();
         try
         {
-            if (outputRegion)
+            var source = await NativeControlPicker.PickAsync(target, cancellation.Token, outputRegion);
+            // 点选期间可以释放或更换目标。只有原绑定仍有效，才把新来源交给浮窗。
+            if (cancellation.IsCancellationRequested || _windows.Target != target || !_windows.IsAlive())
+            { source.Dispose(); return; }
+            if (_detached.TryGetValue(source.Key, out var open))
+            { source.Dispose(); open.Activate(); Status(""); return; }
+            DetachedWindow view;
+            try
             {
-                var region = await NativeControlPicker.PickRegionAsync(target, cancellation.Token);
-                OpenPicked(region, region.Key, region.Label, () => new NativeRegionWindow(region));
+                view = source switch
+                {
+                    NativeTextRegion region => new NativeRegionWindow(region),
+                    NativeControlBinding binding => new NativeTextWindow(binding),
+                    _ => throw new InvalidOperationException("不支持的控件类型。")
+                };
             }
-            else
-            {
-                var binding = await NativeControlPicker.PickAsync(target, cancellation.Token);
-                OpenPicked(binding, binding.Key, binding.Label, () => new NativeTextWindow(binding));
-            }
+            catch { source.Dispose(); throw; }
+            ShowDetached(view, source.Key, source.Label);
             Status("");
-
-            void OpenPicked(IDisposable source, string key, string label, Func<DetachedWindow> createWindow)
-            {
-                // 点选期间可以释放或更换目标。只有原绑定仍有效，才把新来源交给浮窗。
-                if (cancellation.IsCancellationRequested || _windows.Target != target || !_windows.IsAlive())
-                { source.Dispose(); return; }
-                if (_detached.TryGetValue(key, out var open))
-                { source.Dispose(); open.Activate(); return; }
-                DetachedWindow view;
-                try { view = createWindow(); }
-                catch { source.Dispose(); throw; }
-                ShowDetached(view, key, label);
-            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (!cancellation.IsCancellationRequested) Status(ex.Message); }
