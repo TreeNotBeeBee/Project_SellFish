@@ -2,6 +2,7 @@
 import argparse
 import ctypes
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -54,7 +55,7 @@ def check_drag(panel, logo):
     mouse.press(coords=(point.x, point.y))
     try:
         mouse.move(coords=(point.x + 40, point.y + 32))
-        wait(lambda: gui.GetWindowRect(panel.handle)[:2] != before[:2], "dragging the fish basket moves the toolbar")
+        wait(lambda: gui.GetWindowRect(panel.handle)[:2] != before[:2], "dragging the logo moves the toolbar")
     finally:
         mouse.release(coords=(point.x + 40, point.y + 32))
     time.sleep(.12)
@@ -64,7 +65,24 @@ def check_drag(panel, logo):
     assert gui.GetWindowRect(panel.handle) == after
 
 
+def verify_default_styles(exe, base):
+    # 1.3.5 users with only the legacy toolbar file keep their classic layout.
+    for previous in (False, True):
+        profile = base / ("existing-classic" if previous else "fresh")
+        profile.mkdir()
+        if previous:
+            (profile / "mini-toolbar.json").write_text('["hide"]', encoding="utf8")
+        for _ in range(1 if previous else 2):
+            with controller(exe, profile) as panel:
+                panel.child_window(auto_id="SettingsTab").wrapper_object().iface_selection_item.Select()
+                box = panel.child_window(auto_id="MiniStyleBox").wrapper_object()
+                expected = "经典" if previous else "初始图标"
+                assert box.selected_text() == expected, (expected, box.selected_text())
+                print("PASS default style", expected, flush=True)
+
+
 def test(exe, profile, drag=False):
+    verify_default_styles(exe, profile)
     title = "0001-Mini-QA-" + uuid.uuid4().hex[:8]
     target = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("ui_smoke.py")), "--target", title])
     write_setting(profile / "shortcut.json", 0x84)
@@ -72,6 +90,9 @@ def test(exe, profile, drag=False):
     legacy = profile / "mini-toolbar.json"
     original = b'["topmost", "hide"]'
     legacy.write_bytes(original)
+    appearance = profile / "mini-appearance.json"
+    old_icons = b'{"Style":"ime","Slots":["topmost","hide","clickThrough"]}'
+    appearance.write_bytes(old_icons)
     (profile / "theme.txt").write_text("dark", encoding="utf8")
     try:
         wait(lambda: gui.FindWindow(None, title), "test target opened")
@@ -99,37 +120,46 @@ def test(exe, profile, drag=False):
                 classic = ["Mini.topmost", "Mini.hide"]
                 if restart:
                     collapse(["Mini.DragHandle", "Mini.gray", "Mini.invert", "Mini.hide"])
+                    assert field("Mini.DragHandle").element_info.element.CurrentHelpText == "输入法图标"
                     assert all(not field(name).is_enabled() for name in mini_ids()[1:])
                     assert style(panel.handle, wc.WS_EX_TOPMOST)
                     invoke("ImeExpandButton")
                     tab("SettingsTab")
+                    assert field("MiniStyleBox").selected_text() == "输入法"
                     choose_item(panel, field("MiniStyleBox"), "经典")
                     collapse(classic)
                     assert active("ExitButton") and not active("Mini.DragHandle")
                     assert legacy.read_bytes() == original
                     continue
-                collapse(classic)
-                invoke("ExpandButton")
+                collapse(["Mini.DragHandle", "Mini.topmost", "Mini.hide", "Mini.clickThrough"])
+                assert field("Mini.DragHandle").element_info.element.CurrentHelpText == "初始图标"
+                assert appearance.read_bytes() == old_icons
+                invoke("ImeExpandButton")
                 choose_item(panel, field("TargetBox"), title)
                 wait(lambda: field("HiddenBox").is_enabled(), "bound to the test window")
                 tab("SettingsTab")
+                assert field("MiniStyleBox").selected_text() == "初始图标"
                 toggle("ToolPin")
                 choose_item(panel, field("MiniStyleBox"), "输入法")
-                choose_item(panel, field("MiniSlot1"), "始终置顶")
+                choose_item(panel, field("MiniSlot2"), "页面穿透")
                 layout = ["Mini.DragHandle", "Mini.topmost", "Mini.clickThrough", "Mini.hide"]
+                full_client = gui.GetClientRect(panel.handle)
                 collapse(layout)
                 assert not active("ExitButton")
                 logo = field("Mini.DragHandle")
                 assert logo.element_info.control_type == "Image" and not logo.element_info.element.CurrentIsKeyboardFocusable
+                assert logo.element_info.element.CurrentHelpText == "输入法图标"
+                assert [field(name).window_text() for name in layout[1:]] == ["始终置顶", "页面穿透", "隐藏"]
                 assert not logo.element_info.element.GetCurrentPropertyValue(30031)  # UIA_IsInvokePatternAvailablePropertyId
                 buttons = [*mini_ids(), "ImeExpandButton"]
                 assert sorted(buttons, key=lambda name: field(name).rectangle().left) == [*layout, "ImeExpandButton"]
                 commands = {node.element_info.automation_id for node in panel.descendants()
                             if node.element_info.control_type in ("Button", "CheckBox") and node.is_visible()}
                 assert commands == set(layout[1:] + ["ImeExpandButton"]), commands
-                rect = gui.GetWindowRect(panel.handle)
+                # The invisible native frame varies with Windows. The reference strip is 164 × 22 DIPs inside it.
+                _, _, width, height = gui.GetClientRect(panel.handle)
                 scale = ctypes.windll.user32.GetDpiForWindow(panel.handle) / 96
-                assert rect[2] - rect[0] <= 220 * scale and rect[3] - rect[1] <= 50 * scale
+                assert abs(width / scale - 164) <= 2 and abs(height / scale - 22) <= 1, (width, height, scale)
                 assert style(panel.handle, wc.WS_EX_TOPMOST)
                 if drag:
                     check_drag(panel, logo)
@@ -144,11 +174,13 @@ def test(exe, profile, drag=False):
                 wait(lambda: not gui.IsWindowVisible(hwnd), "mini hide applies to target")
                 invoke("ImeExpandButton")
                 wait(lambda: active("MiniStyleBox"), "expanding returns to Settings")
+                wait(lambda: gui.GetClientRect(panel.handle) == full_client, "expanding restores the full client size")
                 choose_item(panel, field("MiniSlot1"), "灰度")
                 choose_item(panel, field("MiniSlot2"), "反色")
                 tab("BasicTab")
                 choose_item(panel, field("ThemeBox"), "白")
                 collapse(["Mini.DragHandle", "Mini.gray", "Mini.invert", "Mini.hide"])
+                assert [field("Mini." + name).window_text() for name in ("gray", "invert", "hide")] == ["灰度", "反色", "隐藏"]
                 toggle("Mini.gray")
                 toggle("Mini.invert")
                 invoke("ImeExpandButton")
@@ -158,6 +190,7 @@ def test(exe, profile, drag=False):
                 toggle("HiddenBox")
                 wait(lambda: gui.IsWindowVisible(hwnd), "original target restored")
                 assert legacy.read_bytes() == original
+                assert json.loads(appearance.read_text(encoding="utf8")) == {"Style": "input-method", "Slots": ["gray", "invert", "hide"]}
                 print("PASS all five IME action assignments and independent classic configuration", flush=True)
     finally:
         target.terminate()

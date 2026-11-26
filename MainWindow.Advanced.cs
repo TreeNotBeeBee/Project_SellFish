@@ -24,8 +24,8 @@ public sealed partial class MainWindow
             updating = true;
             try
             {
-                MiniStyleBox.SelectedIndex = settings.IsIme ? 1 : 0;
-                MiniSlotSettings.Visibility = settings.IsIme ? Visibility.Visible : Visibility.Collapsed;
+                MiniStyleBox.SelectedIndex = (int)settings.Style;
+                MiniSlotSettings.Visibility = settings.UsesIcons ? Visibility.Visible : Visibility.Collapsed;
                 for (int i = 0; i < slots.Length; i++)
                     slots[i].SelectedIndex = Array.FindIndex(actions, action => action.Id == settings.Slots[i]);
             }
@@ -41,7 +41,11 @@ public sealed partial class MainWindow
         }
 
         Refresh();
-        MiniStyleBox.SelectionChanged += (_, _) => Change(() => settings.SetStyle(MiniStyleBox.SelectedIndex == 1));
+        MiniStyleBox.SelectionChanged += (_, _) =>
+        {
+            if (MiniStyleBox.SelectedIndex >= 0)
+                Change(() => settings.SetStyle((MiniToolbarStyle)MiniStyleBox.SelectedIndex));
+        };
         foreach (var box in slots)
         {
             int position = Array.IndexOf(slots, box);

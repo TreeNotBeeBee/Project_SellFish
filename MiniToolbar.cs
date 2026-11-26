@@ -10,6 +10,9 @@ internal sealed record MiniToggle(string Id, CheckBox Source, Action<bool> Apply
 
 internal sealed class MiniToolbar : IDisposable
 {
+    // 输入法图案固定在各自的位置，实际操作和无障碍名称仍由该位置分配的功能提供。
+    private static readonly string[] KeyboardIcons = ["KeyboardLanguage", "KeyboardPunctuation", "KeyboardInput"];
+
     private sealed class ToggleView : IDisposable
     {
         private readonly MiniToggle _action;
@@ -63,14 +66,15 @@ internal sealed class MiniToolbar : IDisposable
     public MiniToolbar(IEnumerable<MiniToggle> actions) =>
         _actions = actions.ToDictionary(action => action.Id, StringComparer.OrdinalIgnoreCase);
 
-    public void Show(StackPanel host, IReadOnlyList<string> ids, Style style, ResourceDictionary? icons)
+    public void Show(StackPanel host, IReadOnlyList<string> ids, Style style, ResourceDictionary? icons, bool inputMethod)
     {
         Clear();
         _host = host;
-        foreach (string id in ids)
+        for (int position = 0; position < ids.Count; position++)
         {
-            var action = _actions[id];
-            var view = new ToggleView(action, style, icons == null ? null : (DataTemplate)icons[action.IconKey]);
+            var action = _actions[ids[position]];
+            var iconKey = inputMethod ? KeyboardIcons[position] : action.IconKey;
+            var view = new ToggleView(action, style, icons == null ? null : (DataTemplate)icons[iconKey]);
             _views.Add(view);
             host.Children.Add(view.Button);
         }

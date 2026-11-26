@@ -40,6 +40,7 @@ def test(exe, profile, title):
     fields = [gui.GetDlgItem(target, 101 + i) for i in range(2)]
     write_setting(profile / "shortcut.json", 0x76)
     write_setting(profile / "passthrough-shortcut.json", 0x77)
+    (profile / "mini-appearance.json").write_text('{"Style":"classic"}', encoding="utf8")
     env = {**os.environ, "WINDOWPILOT_PROFILE_DIR": str(profile)}
     app = None
 

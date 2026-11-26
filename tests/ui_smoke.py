@@ -92,6 +92,7 @@ def main(exe):
             write_setting(hide_key, initial_hide)
             write_setting(pass_key, initial_pass)
             (profile / "theme.txt").write_text("light", encoding="utf8")
+            (profile / "mini-toolbar.json").write_text('["hide", "clickThrough", "topmost"]', encoding="utf8")
             env = {**os.environ, "WINDOWPILOT_PROFILE_DIR": str(profile)}
             controller = subprocess.Popen([str(exe)], cwd=exe.parent, env=env)
             spec = desktop.window(process=controller.pid, class_name="WinUIDesktopWin32WindowClass", title="sell fish")

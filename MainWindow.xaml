@@ -184,6 +184,7 @@
                 <ComboBox x:Name="MiniStyleBox" Width="110" AutomationProperties.AutomationId="MiniStyleBox"
                           AutomationProperties.Name="迷你工具栏样式">
                     <ComboBoxItem Content="经典"/>
+                    <ComboBoxItem Content="初始图标"/>
                     <ComboBoxItem Content="输入法"/>
                 </ComboBox>
             </StackPanel>

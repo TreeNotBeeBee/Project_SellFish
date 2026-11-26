@@ -144,29 +144,38 @@ internal sealed class CompactWindow : IDisposable
         if (_mini == mini) return;
         _mini = mini;
         UpdatePresentation();
-        var focus = mini ? (_toolbarSettings.IsIme ? _imeBar.Expand : _expand) : _collapse;
+        var focus = mini ? (_toolbarSettings.UsesIcons ? _imeBar.Expand : _expand) : _collapse;
         focus.Focus(FocusState.Programmatic);
     }
 
     private void UpdatePresentation()
     {
-        bool ime = _mini && _toolbarSettings.IsIme;
-        bool classic = _mini && !ime;
+        bool icons = _mini && _toolbarSettings.UsesIcons;
+        bool classic = _mini && !icons;
+        bool inputMethod = icons && _toolbarSettings.Style == MiniToolbarStyle.InputMethod;
+        // Windows 会给带原生边框的窗口保留最小高度。输入法条使用无边框窗口，才能贴合 22 DIP 高的图标。
+        var presenter = _window.AppWindow.Presenter as OverlappedPresenter;
+        bool needsBorder = !inputMethod;
+        bool changingBorder = presenter != null && presenter.HasBorder != needsBorder;
+        if (changingBorder) presenter!.SetBorderAndTitleBar(needsBorder, false);
         _fullPanel.Visibility = _collapse.Visibility = _mini ? Visibility.Collapsed : Visibility.Visible;
         _miniActions.Visibility = _expand.Visibility = classic ? Visibility.Visible : Visibility.Collapsed;
-        _caption.Visibility = ime ? Visibility.Collapsed : Visibility.Visible;
-        _imeBar.Visibility = ime ? Visibility.Visible : Visibility.Collapsed;
+        _caption.Visibility = icons ? Visibility.Collapsed : Visibility.Visible;
+        _imeBar.Visibility = icons ? Visibility.Visible : Visibility.Collapsed;
         _caption.VerticalAlignment = classic ? VerticalAlignment.Center : VerticalAlignment.Top;
         _caption.Margin = new Thickness(0, classic ? 0 : 2, 3, 0);
         if (_mini)
         {
-            var host = ime ? _imeBar.Actions : _miniActions;
-            var style = ime ? _imeBar.Resources["ImeToggle"] : _root.Resources["ToolbarToggle"];
-            _toolbar.Show(host, _toolbarSettings.GetActionIds(), (Style)style, ime ? _imeBar.Resources : null);
+            if (icons) _imeBar.SetInputMethodSkin(inputMethod);
+            var host = icons ? _imeBar.Actions : _miniActions;
+            var style = icons ? _imeBar.Resources[inputMethod ? "KeyboardToggle" : "ImeToggle"] : _root.Resources["ToolbarToggle"];
+            _toolbar.Show(host, _toolbarSettings.GetActionIds(), (Style)style, icons ? _imeBar.Resources : null, inputMethod);
         }
         else _toolbar.Clear();
         _switchMode.Text = _mini ? "展开主面板" : "收起为工具栏";
         SizeWindow();
+        // Windows 10 在后续消息中更新边框尺寸，用最终的非客户区尺寸再核对一次客户区。
+        if (changingBorder) _window.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, SizeWindow);
     }
 
     // Follow the system close path so AppWindow.Closing can cancel a failed target restore.
@@ -195,7 +204,7 @@ internal sealed class CompactWindow : IDisposable
         if (_mini)
         {
             var unlimited = new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity);
-            if (_toolbarSettings.IsIme)
+            if (_toolbarSettings.UsesIcons)
             {
                 _imeBar.Measure(unlimited);
                 width = _imeBar.DesiredSize.Width;
@@ -327,7 +336,7 @@ internal sealed class CompactWindow : IDisposable
 
     private void OnRightTapped(object sender, RightTappedRoutedEventArgs args)
     {
-        if ((_mini && _toolbarSettings.IsIme) || !IsBlank(args.OriginalSource)) return;
+        if ((_mini && _toolbarSettings.UsesIcons) || !IsBlank(args.OriginalSource)) return;
         args.Handled = true;
         _menu.ShowAt(_root, new FlyoutShowOptions { Position = args.GetPosition(_root) });
     }

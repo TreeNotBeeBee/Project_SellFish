@@ -2,6 +2,8 @@ using System.Text.Json;
 
 namespace WindowPilot;
 
+internal enum MiniToolbarStyle { Classic, InitialIcons, InputMethod }
+
 internal sealed class MiniToolbarSettings
 {
     private sealed record Preferences(string? Style, string[]? Slots);
@@ -10,7 +12,8 @@ internal sealed class MiniToolbarSettings
     private readonly Dictionary<string, string> _actionIds;
     private readonly string _profile;
     private string[] _slots;
-    internal bool IsIme { get; private set; }
+    internal MiniToolbarStyle Style { get; private set; }
+    internal bool UsesIcons => Style != MiniToolbarStyle.Classic;
     internal IReadOnlyList<string> Slots => _slots;
     internal event Action? Changed;
 
@@ -19,14 +22,30 @@ internal sealed class MiniToolbarSettings
         _profile = profile;
         _actionIds = actions.ToDictionary(id => id, StringComparer.OrdinalIgnoreCase);
         _slots = Defaults;
-        try
+        if (!File.Exists(AppearancePath) && !File.Exists(ClassicPath))
         {
-            var saved = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(AppearancePath));
-            IsIme = saved?.Style == "ime";
-            if (saved?.Slots is { } slots) _slots = NormalizeSlots(slots);
+            // 首次使用先记住初始图标，再生成经典布局文件，避免下次启动被误判为旧版配置。
+            Style = MiniToolbarStyle.InitialIcons;
+            try { Save(Style, _slots); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return; }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        { /* 首次启动或配置损坏时使用经典样式。 */ }
+        else if (File.Exists(AppearancePath))
+        {
+            try
+            {
+                var saved = JsonSerializer.Deserialize<Preferences>(File.ReadAllText(AppearancePath));
+                // 1.3.5 用 ime 保存功能图标。继续读取该标识，升级后才能保留原来的外观。
+                Style = saved?.Style switch
+                {
+                    "ime" => MiniToolbarStyle.InitialIcons,
+                    "input-method" => MiniToolbarStyle.InputMethod,
+                    _ => MiniToolbarStyle.Classic
+                };
+                if (saved?.Slots is { } slots) _slots = NormalizeSlots(slots);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            { /* 沿用旧版对不可读配置的处理，使用经典样式。 */ }
+        }
         // 老版本在首次启动时就生成可编辑的经典工具栏配置，包括用户尚未收起窗口的情况。
         if (!File.Exists(ClassicPath)) ReadClassicActionIds();
     }
@@ -48,9 +67,9 @@ internal sealed class MiniToolbarSettings
         return slots;
     }
 
-    internal void SetStyle(bool ime)
+    internal void SetStyle(MiniToolbarStyle style)
     {
-        if (ime != IsIme) Save(ime, _slots);
+        if (style != Style) Save(style, _slots);
     }
 
     internal void Assign(int position, string action)
@@ -61,22 +80,29 @@ internal sealed class MiniToolbarSettings
         int previous = Array.IndexOf(next, id);
         if (previous >= 0) next[previous] = next[position];
         next[position] = id;
-        Save(IsIme, next);
+        Save(Style, next);
     }
 
-    private void Save(bool ime, string[] slots)
+    private void Save(MiniToolbarStyle style, string[] slots)
     {
+        string styleId = style switch
+        {
+            MiniToolbarStyle.Classic => "classic",
+            MiniToolbarStyle.InitialIcons => "ime",
+            MiniToolbarStyle.InputMethod => "input-method",
+            _ => throw new ArgumentOutOfRangeException(nameof(style))
+        };
         // 先写入临时文件再替换。保存失败时，已显示的工具栏继续使用上一次配置。
         Directory.CreateDirectory(_profile);
         string temp = AppearancePath + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(new Preferences(ime ? "ime" : "classic", slots)));
+        File.WriteAllText(temp, JsonSerializer.Serialize(new Preferences(styleId, slots)));
         File.Move(temp, AppearancePath, true);
-        IsIme = ime;
+        Style = style;
         _slots = slots;
         Changed?.Invoke();
     }
 
-    internal IReadOnlyList<string> GetActionIds() => IsIme ? Slots : ReadClassicActionIds();
+    internal IReadOnlyList<string> GetActionIds() => UsesIcons ? Slots : ReadClassicActionIds();
 
     private string[] ReadClassicActionIds()
     {
