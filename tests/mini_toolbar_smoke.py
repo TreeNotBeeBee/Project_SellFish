@@ -142,13 +142,6 @@ def test(exe, profile, drag=False):
                 toggle("Mini.clickThrough")
                 toggle("Mini.hide")
                 wait(lambda: not gui.IsWindowVisible(hwnd), "mini hide applies to target")
-                screenshots = os.environ.get("SELL_FISH_IME_PREVIEWS")
-                def snapshot(theme):
-                    if screenshots:
-                        from PIL import ImageGrab
-                        time.sleep(.3)
-                        ImageGrab.grab(window=panel.handle).save(Path(screenshots) / f"ime-toolbar-{theme}-preview.png")
-                snapshot("dark")
                 invoke("ImeExpandButton")
                 wait(lambda: active("MiniStyleBox"), "expanding returns to Settings")
                 choose_item(panel, field("MiniSlot1"), "灰度")
@@ -158,7 +151,6 @@ def test(exe, profile, drag=False):
                 collapse(["Mini.DragHandle", "Mini.gray", "Mini.invert", "Mini.hide"])
                 toggle("Mini.gray")
                 toggle("Mini.invert")
-                snapshot("light")
                 invoke("ImeExpandButton")
                 assert field("GrayBox").iface_toggle.CurrentToggleState and field("InvertBox").iface_toggle.CurrentToggleState
                 toggle("GrayBox")
