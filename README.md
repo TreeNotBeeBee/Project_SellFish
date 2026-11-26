@@ -34,7 +34,11 @@
 
 ### 自定义迷你工具栏
 
-默认从左到右为 **隐藏、页面穿透、始终置顶**。首次启动会生成 `%LOCALAPPDATA%\WindowPilot\mini-toolbar.json`。可调整数组顺序或删除不需要的项目，下次收起面板时生效。展开和退出始终可用。
+在 **设置** 页将迷你工具栏样式设为 **输入法**，再从左到右安排三个功能位。每个位置都可选择 **始终置顶、反色、灰度、隐藏、页面穿透**。选中已放在另一个位置的功能，两个位置会互换。样式和排列会自动保存。
+
+点 **—** 收起后，按住左边的鱼篓图标可拖动工具栏，中间三个图标切换绑定窗口的对应功能，最右边的展开键会回到收起前的分页。工具栏跟随主面板的黑白主题。
+
+**经典** 是默认样式，保留文字按钮。首次启动会生成 `%LOCALAPPDATA%\WindowPilot\mini-toolbar.json`，可以调整下面的顺序或删除项目，下次收起面板时生效。
 
 ```json
 ["hide", "clickThrough", "topmost"]
@@ -72,6 +76,7 @@ dotnet run --project .\tests\DetachedProbe\DetachedProbe.csproj -c Release
 python -X utf8 tests/ui_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/shortcut_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/advanced_ui_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
+python -X utf8 tests/mini_toolbar_smoke.py "dist/WindowPilot-win-x64/sell fish.exe" --drag
 ```
 
 ## 维护
@@ -81,7 +86,8 @@ python -X utf8 tests/advanced_ui_smoke.py "dist/WindowPilot-win-x64/sell fish.ex
 | MainWindow.xaml / MainWindow.xaml.cs | 绑定、释放和界面交互；协调隐藏、置顶、透明度及滤镜的状态 |
 | WindowService.cs | 枚举、核验及操作真实目标窗口，保存原始状态并执行恢复 |
 | GlobalShortcut.cs | 隐藏、穿透和不透明度增减快捷键的录入、清除、冲突检查、系统注册及保存 |
-| CompactWindow.cs / MiniToolbar.cs | 双模式面板、固定尺寸、拖动、黑白主题和可配置工具栏 |
+| CompactWindow.cs / MiniToolbar.cs / ImeToolbar.xaml | 面板收起与展开、拖动、经典与输入法样式、按钮状态同步 |
+| MiniToolbarSettings.cs | 工具栏样式、三个功能位的顺序、经典配置兼容 |
 | Detached / MainWindow.Advanced.cs | Windows UI Automation 控件选择、浮窗和高级分页 |
 | BackdropOpacityLayer.cs | 用独立的鼠标穿透图层混合实时背景，兼容自行重设透明度的目标 |
 | EffectSession.cs / NativeEffectOverlay.cs | 捕获绑定窗口、执行 Win2D 滤镜并将结果显示在目标位置 |

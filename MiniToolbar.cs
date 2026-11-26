@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -7,7 +6,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 namespace WindowPilot;
 
 /// <summary>One available mini-toolbar command, sharing the main panel's state and action.</summary>
-internal sealed record MiniToggle(string Id, CheckBox Source, Action<bool> Apply);
+internal sealed record MiniToggle(string Id, CheckBox Source, Action<bool> Apply, string IconKey);
 
 internal sealed class MiniToolbar : IDisposable
 {
@@ -16,13 +15,19 @@ internal sealed class MiniToolbar : IDisposable
         private readonly MiniToggle _action;
         private readonly long _checkedToken;
         private readonly long _enabledToken;
-        public CheckBox Button { get; }
+        public ToggleButton Button { get; }
 
-        public ToggleView(MiniToggle action, Style style)
+        public ToggleView(MiniToggle action, Style style, IconSource? icon)
         {
             _action = action;
-            Button = new CheckBox { Style = style, Content = action.Source.Content };
+            Button = icon != null
+                ? new ToggleButton { Content = new IconSourceElement { IconSource = icon, Width = 16, Height = 16 } }
+                : new CheckBox { Content = action.Source.Content };
+            Button.Style = style;
             AutomationProperties.SetAutomationId(Button, $"Mini.{action.Id}");
+            var label = action.Source.Content?.ToString() ?? action.Id;
+            AutomationProperties.SetName(Button, label);
+            ToolTipService.SetToolTip(Button, label);
             _checkedToken = action.Source.RegisterPropertyChangedCallback(ToggleButton.IsCheckedProperty, Update);
             _enabledToken = action.Source.RegisterPropertyChangedCallback(Control.IsEnabledProperty, Update);
             Button.Click += OnClick;
@@ -51,53 +56,34 @@ internal sealed class MiniToolbar : IDisposable
         }
     }
 
-    private readonly StackPanel _host;
-    private readonly string[] _defaults;
-    private readonly Dictionary<string, ToggleView> _views;
+    private readonly Dictionary<string, MiniToggle> _actions;
+    private readonly List<ToggleView> _views = [];
+    private StackPanel? _host;
 
-    public MiniToolbar(StackPanel host, IReadOnlyList<MiniToggle> actions, Style style)
+    public MiniToolbar(IEnumerable<MiniToggle> actions) =>
+        _actions = actions.ToDictionary(action => action.Id, StringComparer.OrdinalIgnoreCase);
+
+    public void Show(StackPanel host, IReadOnlyList<string> ids, Style style, ResourceDictionary? icons)
     {
+        Clear();
         _host = host;
-        _defaults = actions.Select(action => action.Id).ToArray();
-        _views = actions.ToDictionary(action => action.Id, action => new ToggleView(action, style),
-            StringComparer.OrdinalIgnoreCase);
-        Reload();
-    }
-
-    public void Reload()
-    {
-        var ids = LoadIds();
-        _host.Children.Clear();
-        foreach (string id in ids) _host.Children.Add(_views[id].Button);
-    }
-
-    private string[] LoadIds()
-    {
-        string path = Path.Combine(AppProfile.DirectoryPath, "mini-toolbar.json");
-        try
+        foreach (string id in ids)
         {
-            if (!File.Exists(path))
-            {
-                Directory.CreateDirectory(AppProfile.DirectoryPath);
-                using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
-                JsonSerializer.Serialize(stream, _defaults, new JsonSerializerOptions { WriteIndented = true });
-                return _defaults;
-            }
-
-            var configured = JsonSerializer.Deserialize<string?[]>(File.ReadAllText(path));
-            if (configured is null) return _defaults;
-            var available = configured.OfType<string>().Where(_views.ContainsKey)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            return configured.Length > 0 && available.Length == 0 ? _defaults : available;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            return _defaults;
+            var action = _actions[id];
+            var view = new ToggleView(action, style, icons == null ? null : (IconSource)icons[action.IconKey]);
+            _views.Add(view);
+            host.Children.Add(view.Button);
         }
     }
 
-    public void Dispose()
+    public void Clear()
     {
-        foreach (var view in _views.Values) view.Dispose();
+        // 切换外观或展开面板时，同时解绑旧按钮和它对应的状态订阅。
+        foreach (var view in _views) view.Dispose();
+        _views.Clear();
+        _host?.Children.Clear();
+        _host = null;
     }
+
+    public void Dispose() => Clear();
 }

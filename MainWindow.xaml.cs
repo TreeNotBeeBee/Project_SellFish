@@ -34,12 +34,17 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "FishBasket.ico"));
-        _panel = new CompactWindow(this, Root, ThemeBox, StatusText,
+        MiniToggle[] actions =
         [
-            new("hide", HiddenBox, _ => Run(SwitchVisibility)),
-            new("clickThrough", ClickThroughBox, _ => Run(SwitchThrough)),
-            new("topmost", TopmostBox, value => Run(() => SetTopmost(value)))
-        ]);
+            new("hide", HiddenBox, _ => Run(SwitchVisibility), "ImeHideIcon"),
+            new("clickThrough", ClickThroughBox, _ => Run(SwitchThrough), "ImeThroughIcon"),
+            new("topmost", TopmostBox, value => Run(() => SetTopmost(value)), "ImeTopmostIcon"),
+            new("invert", InvertBox, value => Run(() => SetFilters(value, _gray)), "ImeInvertIcon"),
+            new("gray", GrayBox, value => Run(() => SetFilters(_invert, value)), "ImeGrayIcon")
+        ];
+        var toolbarSettings = new MiniToolbarSettings(AppProfile.DirectoryPath, actions.Select(action => action.Id));
+        _panel = new CompactWindow(this, Root, ThemeBox, StatusText, actions, toolbarSettings);
+        InitializeToolbarSettings(toolbarSettings, actions);
         InitializeDetachedControls();
         _typing = DispatcherQueue.CreateTimer();
         _typing.Interval = TimeSpan.FromMilliseconds(320);
@@ -331,12 +336,15 @@ public sealed partial class MainWindow : Window
         Status("");
     }
 
-    private void ChangeFilters(object sender, RoutedEventArgs e)
+    private void ChangeFilters(object sender, RoutedEventArgs e) =>
+        Run(() => SetFilters(InvertBox.IsChecked == true, GrayBox.IsChecked == true));
+
+    private void SetFilters(bool invert, bool gray)
     {
-        if (!_ready || _updating || _windows.Target == null) return;
-        _invert = InvertBox.IsChecked == true;
-        _gray = GrayBox.IsChecked == true;
-        Run(ApplyAppearance);
+        if (!_ready || _updating || _windows.Target == null || !InvertBox.IsEnabled) return;
+        _invert = invert;
+        _gray = gray;
+        ApplyAppearance();
     }
 
     private void ApplyAppearance()

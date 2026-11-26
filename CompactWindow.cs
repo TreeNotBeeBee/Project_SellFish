@@ -30,6 +30,8 @@ internal sealed class CompactWindow : IDisposable
     private readonly Button _expand;
     private readonly Button _exit;
     private readonly MiniToolbar _toolbar;
+    private readonly MiniToolbarSettings _toolbarSettings;
+    private readonly ImeToolbar _imeBar;
     private readonly MenuFlyoutItem _switchMode = new();
     private readonly nint _hwnd;
     private readonly MenuFlyout _menu = new();
@@ -44,7 +46,7 @@ internal sealed class CompactWindow : IDisposable
     private PointInt32 _windowOrigin;
 
     public CompactWindow(Window window, Grid root, ComboBox theme, TextBlock status,
-        MiniToggle[] actions)
+        MiniToggle[] actions, MiniToolbarSettings settings)
     {
         _window = window;
         _root = root;
@@ -57,7 +59,11 @@ internal sealed class CompactWindow : IDisposable
         _collapse = (Button)root.FindName("CollapseButton");
         _expand = (Button)root.FindName("ExpandButton");
         _exit = (Button)root.FindName("ExitButton");
-        _toolbar = new MiniToolbar(_miniActions, actions, (Style)root.Resources["ToolbarToggle"]);
+        _toolbar = new MiniToolbar(actions);
+        _toolbarSettings = settings;
+        _imeBar = new ImeToolbar { Visibility = Visibility.Collapsed };
+        root.Children.Add(_imeBar);
+        _toolbarSettings.Changed += OnToolbarSettingsChanged;
         // A moving window can stay under the same local pointer coordinate. Sampling
         // screen coordinates while held also covers gaps in XAML PointerMoved events.
         _dragTimer = window.DispatcherQueue.CreateTimer();
@@ -81,6 +87,7 @@ internal sealed class CompactWindow : IDisposable
 
         _collapse.Click += ToggleMode;
         _expand.Click += ToggleMode;
+        _imeBar.Expand.Click += ToggleMode;
         _exit.Click += RequestClose;
         _switchMode.Text = "收起为工具栏";
         _switchMode.Click += ToggleMode;
@@ -127,18 +134,39 @@ internal sealed class CompactWindow : IDisposable
 
     private void ToggleMode(object sender, RoutedEventArgs args) => SetMiniMode(!_mini);
 
+    private void OnToolbarSettingsChanged()
+    {
+        if (_mini) UpdatePresentation();
+    }
+
     private void SetMiniMode(bool mini)
     {
         if (_mini == mini) return;
         _mini = mini;
-        if (mini) _toolbar.Reload();
-        _fullPanel.Visibility = _collapse.Visibility = mini ? Visibility.Collapsed : Visibility.Visible;
-        _miniActions.Visibility = _expand.Visibility = mini ? Visibility.Visible : Visibility.Collapsed;
-        _caption.VerticalAlignment = mini ? VerticalAlignment.Center : VerticalAlignment.Top;
-        _caption.Margin = new Thickness(0, mini ? 0 : 2, 3, 0);
-        _switchMode.Text = mini ? "展开主面板" : "收起为工具栏";
+        UpdatePresentation();
+        var focus = mini ? (_toolbarSettings.IsIme ? _imeBar.Expand : _expand) : _collapse;
+        focus.Focus(FocusState.Programmatic);
+    }
+
+    private void UpdatePresentation()
+    {
+        bool ime = _mini && _toolbarSettings.IsIme;
+        bool classic = _mini && !ime;
+        _fullPanel.Visibility = _collapse.Visibility = _mini ? Visibility.Collapsed : Visibility.Visible;
+        _miniActions.Visibility = _expand.Visibility = classic ? Visibility.Visible : Visibility.Collapsed;
+        _caption.Visibility = ime ? Visibility.Collapsed : Visibility.Visible;
+        _imeBar.Visibility = ime ? Visibility.Visible : Visibility.Collapsed;
+        _caption.VerticalAlignment = classic ? VerticalAlignment.Center : VerticalAlignment.Top;
+        _caption.Margin = new Thickness(0, classic ? 0 : 2, 3, 0);
+        if (_mini)
+        {
+            var host = ime ? _imeBar.Actions : _miniActions;
+            var style = ime ? _imeBar.Resources["ImeToggle"] : _root.Resources["ToolbarToggle"];
+            _toolbar.Show(host, _toolbarSettings.GetActionIds(), (Style)style, ime ? _imeBar.Resources : null);
+        }
+        else _toolbar.Clear();
+        _switchMode.Text = _mini ? "展开主面板" : "收起为工具栏";
         SizeWindow();
-        (mini ? _expand : _collapse).Focus(FocusState.Programmatic);
     }
 
     // Follow the system close path so AppWindow.Closing can cancel a failed target restore.
@@ -167,10 +195,19 @@ internal sealed class CompactWindow : IDisposable
         if (_mini)
         {
             var unlimited = new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity);
-            _miniActions.Measure(unlimited);
-            _caption.Measure(unlimited);
-            width = _miniActions.DesiredSize.Width + _caption.DesiredSize.Width;
-            height = Math.Max(36, Math.Max(_miniActions.DesiredSize.Height, _caption.DesiredSize.Height));
+            if (_toolbarSettings.IsIme)
+            {
+                _imeBar.Measure(unlimited);
+                width = _imeBar.DesiredSize.Width;
+                height = _imeBar.DesiredSize.Height;
+            }
+            else
+            {
+                _miniActions.Measure(unlimited);
+                _caption.Measure(unlimited);
+                width = _miniActions.DesiredSize.Width + _caption.DesiredSize.Width;
+                height = Math.Max(36, Math.Max(_miniActions.DesiredSize.Height, _caption.DesiredSize.Height));
+            }
         }
         var requested = new SizeInt32(Math.Min(Pixels(width), area.Width), Math.Min(Pixels(height), area.Height));
         var currentSize = appWindow.ClientSize;
@@ -290,7 +327,7 @@ internal sealed class CompactWindow : IDisposable
 
     private void OnRightTapped(object sender, RightTappedRoutedEventArgs args)
     {
-        if (!IsBlank(args.OriginalSource)) return;
+        if ((_mini && _toolbarSettings.IsIme) || !IsBlank(args.OriginalSource)) return;
         args.Handled = true;
         _menu.ShowAt(_root, new FlyoutShowOptions { Position = args.GetPosition(_root) });
     }
@@ -299,7 +336,8 @@ internal sealed class CompactWindow : IDisposable
     {
         for (var node = source as DependencyObject; node != null; node = VisualTreeHelper.GetParent(node))
         {
-            if (node == _root) return true;
+            // 只把输入法工具栏的鱼篓区域当作拖动面，不吞掉中间三个按钮的点击。
+            if (node == _root || node == _imeBar.DragGrip) return true;
             if (node is Control) return false;
         }
         return false;
@@ -332,7 +370,9 @@ internal sealed class CompactWindow : IDisposable
         if (_xamlRoot != null) _xamlRoot.Changed -= OnXamlRootChanged;
         _collapse.Click -= ToggleMode;
         _expand.Click -= ToggleMode;
+        _imeBar.Expand.Click -= ToggleMode;
         _exit.Click -= RequestClose;
+        _toolbarSettings.Changed -= OnToolbarSettingsChanged;
         _toolbar.Dispose();
         _status.UnregisterPropertyChangedCallback(TextBlock.TextProperty, _statusToken);
     }

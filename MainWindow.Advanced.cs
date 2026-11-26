@@ -12,6 +12,46 @@ public sealed partial class MainWindow
     private bool _pinned;
     private static string PinPath => Path.Combine(AppProfile.DirectoryPath, "tool-topmost.txt");
 
+    private void InitializeToolbarSettings(MiniToolbarSettings settings, MiniToggle[] actions)
+    {
+        ComboBox[] slots = [MiniSlot1, MiniSlot2, MiniSlot3];
+        var labels = actions.Select(action => (string)action.Source.Content).ToArray();
+        foreach (var box in slots) box.ItemsSource = labels;
+        bool updating = false;
+
+        void Refresh()
+        {
+            updating = true;
+            try
+            {
+                MiniStyleBox.SelectedIndex = settings.IsIme ? 1 : 0;
+                MiniSlotSettings.Visibility = settings.IsIme ? Visibility.Visible : Visibility.Collapsed;
+                for (int i = 0; i < slots.Length; i++)
+                    slots[i].SelectedIndex = Array.FindIndex(actions, action => action.Id == settings.Slots[i]);
+            }
+            finally { updating = false; }
+        }
+
+        void Change(Action save)
+        {
+            if (updating) return;
+            Run(() => { save(); Status(""); });
+            // 选中已占用的功能会交换两个位置；写盘失败时，三个框仍显示原来已保存的配置。
+            Refresh();
+        }
+
+        Refresh();
+        MiniStyleBox.SelectionChanged += (_, _) => Change(() => settings.SetStyle(MiniStyleBox.SelectedIndex == 1));
+        foreach (var box in slots)
+        {
+            int position = Array.IndexOf(slots, box);
+            box.SelectionChanged += (_, _) =>
+            {
+                if (box.SelectedIndex >= 0) Change(() => settings.Assign(position, actions[box.SelectedIndex].Id));
+            };
+        }
+    }
+
     private void InitializeDetachedControls()
     {
         try { _pinned = File.Exists(PinPath) && File.ReadAllText(PinPath).Trim() == "1"; }

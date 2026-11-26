@@ -179,6 +179,27 @@
                       Style="{StaticResource PanelCheckBox}" AutomationProperties.AutomationId="ToolPin"/>
             <TextBlock Text="同时应用于主面板、迷你工具栏和所有分离浮窗。" Style="{ThemeResource CaptionTextBlockStyle}"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,0">
+                <TextBlock Text="迷你工具栏样式" Style="{StaticResource FieldLabel}"/>
+                <ComboBox x:Name="MiniStyleBox" Width="110" AutomationProperties.AutomationId="MiniStyleBox"
+                          AutomationProperties.Name="迷你工具栏样式">
+                    <ComboBoxItem Content="经典"/>
+                    <ComboBoxItem Content="输入法"/>
+                </ComboBox>
+            </StackPanel>
+            <Grid x:Name="MiniSlotSettings" Margin="0,8,0,0" ColumnSpacing="10" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <ComboBox x:Name="MiniSlot1" Header="左侧按钮" HorizontalAlignment="Stretch"
+                          AutomationProperties.AutomationId="MiniSlot1" AutomationProperties.Name="左侧按钮"/>
+                <ComboBox x:Name="MiniSlot2" Header="中间按钮" Grid.Column="1" HorizontalAlignment="Stretch"
+                          AutomationProperties.AutomationId="MiniSlot2" AutomationProperties.Name="中间按钮"/>
+                <ComboBox x:Name="MiniSlot3" Header="右侧按钮" Grid.Column="2" HorizontalAlignment="Stretch"
+                          AutomationProperties.AutomationId="MiniSlot3" AutomationProperties.Name="右侧按钮"/>
+            </Grid>
         </StackPanel>
             <TextBlock x:Name="StatusText" Grid.Row="2" Visibility="Collapsed" TextWrapping="Wrap"
                        MaxLines="2" TextTrimming="CharacterEllipsis" Style="{ThemeResource CaptionTextBlockStyle}"
