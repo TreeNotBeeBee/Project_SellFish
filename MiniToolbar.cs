@@ -17,11 +17,11 @@ internal sealed class MiniToolbar : IDisposable
         private readonly long _enabledToken;
         public ToggleButton Button { get; }
 
-        public ToggleView(MiniToggle action, Style style, IconSource? icon)
+        public ToggleView(MiniToggle action, Style style, DataTemplate? icon)
         {
             _action = action;
             Button = icon != null
-                ? new ToggleButton { Content = new IconSourceElement { IconSource = icon, Width = 16, Height = 16 } }
+                ? new ToggleButton { Content = icon.LoadContent() }
                 : new CheckBox { Content = action.Source.Content };
             Button.Style = style;
             AutomationProperties.SetAutomationId(Button, $"Mini.{action.Id}");
@@ -70,7 +70,7 @@ internal sealed class MiniToolbar : IDisposable
         foreach (string id in ids)
         {
             var action = _actions[id];
-            var view = new ToggleView(action, style, icons == null ? null : (IconSource)icons[action.IconKey]);
+            var view = new ToggleView(action, style, icons == null ? null : (DataTemplate)icons[action.IconKey]);
             _views.Add(view);
             host.Children.Add(view.Button);
         }

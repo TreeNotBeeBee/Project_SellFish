@@ -34,18 +34,21 @@
             <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="ImeSurfaceBrush"/>
             <StaticResource x:Key="ButtonBackgroundPointerOver" ResourceKey="ImeHoverBrush"/>
             <StaticResource x:Key="ButtonForegroundPointerOver" ResourceKey="ImeInkBrush"/>
-            <!-- 早期 Windows 10 的图标字体缺少隐藏和反色字形。路径会继承按钮状态的前景色。 -->
-            <PathIconSource x:Key="ImeHideIcon"
-                Data="F1 M0.3,8 C2,5.05 4.85,3 8,3 C11.15,3 14,5.05 15.7,8 C14,10.95 11.15,13 8,13 C4.85,13 2,10.95 0.3,8 Z
+            <!-- 几何图标兼容较早的 Windows 10，每次展开模板都会得到独立的路径。 -->
+            <DataTemplate x:Key="ImeHideIcon">
+                <PathIcon Width="16" Height="16" Data="F1 M0.3,8 C2,5.05 4.85,3 8,3 C11.15,3 14,5.05 15.7,8 C14,10.95 11.15,13 8,13 C4.85,13 2,10.95 0.3,8 Z
                       M1.95,8 C3.6,10.2 5.65,11.6 8,11.6 C10.35,11.6 12.4,10.2 14.05,8 C12.4,5.8 10.35,4.4 8,4.4 C5.65,4.4 3.6,5.8 1.95,8 Z
                       M10.45,8 A2.45,2.45 0 1 1 5.55,8 A2.45,2.45 0 1 1 10.45,8 Z M1.5,2.4 L2.5,1.4 L14.5,13.4 L13.5,14.4 Z"/>
-            <PathIconSource x:Key="ImeInvertIcon"
-                Data="F0 M8,0.5 A7.5,7.5 0 1 1 8,15.5 A7.5,7.5 0 1 1 8,0.5 Z M8,2 A6,6 0 0 1 8,14 Z"/>
-            <PathIconSource x:Key="ImeGrayIcon"
-                Data="F0 M0.5,2 H15.5 V14 H0.5 Z M10.75,3.4 H14.1 V12.6 H10.75 Z
+            </DataTemplate>
+            <DataTemplate x:Key="ImeInvertIcon">
+                <PathIcon Width="16" Height="16" Data="F0 M8,0.5 A7.5,7.5 0 1 1 8,15.5 A7.5,7.5 0 1 1 8,0.5 Z M8,2 A6,6 0 0 1 8,14 Z"/>
+            </DataTemplate>
+            <DataTemplate x:Key="ImeGrayIcon">
+                <PathIcon Width="16" Height="16" Data="F0 M0.5,2 H15.5 V14 H0.5 Z M10.75,3.4 H14.1 V12.6 H10.75 Z
                       M6,3.4 H9.5 V4.65 H6 Z M6,6 H9.5 V7.25 H6 Z M6,8.7 H9.5 V10 H6 Z M6,11.35 H9.5 V12.6 H6 Z"/>
-            <FontIconSource x:Key="ImeTopmostIcon" FontSize="16" Glyph="&#xE718;"/>
-            <FontIconSource x:Key="ImeThroughIcon" FontSize="16" Glyph="&#xE7C9;"/>
+            </DataTemplate>
+            <DataTemplate x:Key="ImeTopmostIcon"><FontIcon FontSize="16" Glyph="&#xE718;"/></DataTemplate>
+            <DataTemplate x:Key="ImeThroughIcon"><FontIcon FontSize="16" Glyph="&#xE7C9;"/></DataTemplate>
             <Style x:Key="ImeToggle" TargetType="ToggleButton">
                 <Setter Property="Width" Value="30"/>
                 <Setter Property="Height" Value="24"/>
