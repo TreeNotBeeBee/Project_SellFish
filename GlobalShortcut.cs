@@ -78,22 +78,23 @@ internal sealed record Shortcut(uint Modifiers, uint Key, byte Sides = 0)
         return GetKeyNameTextW(keyData, name, name.Capacity) > 0 ? name.ToString() : $"VK {key:X2}";
     }
 
-    internal static Shortcut Load(string path, Shortcut fallback)
+    internal static Shortcut? Load(string path, Shortcut? fallback)
     {
         try
         {
             var saved = JsonSerializer.Deserialize<Shortcut>(File.ReadAllText(path));
-            if (saved is { IsValid: true }) return saved;
+            // 没有配置文件时沿用初始快捷键；显式保存的 JSON null 表示用户已清除绑定。
+            if (saved == null || saved.IsValid) return saved;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
         return fallback;
     }
 
-    internal void Save(string path)
+    internal static void Save(string path, Shortcut? shortcut)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temp = path + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(this));
+        File.WriteAllText(temp, JsonSerializer.Serialize(shortcut));
         File.Move(temp, path, true);
     }
 
@@ -127,17 +128,20 @@ internal sealed class ModifierGesture
     }
 }
 
-/// <summary>Owns the two global shortcuts and their single-field recorders.</summary>
+/// <summary>Registers the panel's global shortcuts and handles their record and clear controls.</summary>
 internal sealed class ShortcutEditor : IDisposable
 {
-    private sealed class Binding(string name, string file, TextBox field, Action activate, Shortcut fallback, int baseId)
+    private sealed class Binding(string name, string file, (TextBox Field, Button Clear, Action Activate) controls,
+        Shortcut? fallback, int baseId)
     {
         internal string Name { get; } = name;
         internal string Path { get; } = System.IO.Path.Combine(AppProfile.DirectoryPath, file);
-        internal TextBox Field { get; } = field;
-        internal Action Activate { get; } = activate;
+        internal TextBox Field { get; } = controls.Field;
+        internal Button ClearButton { get; } = controls.Clear;
+        internal Action Activate { get; } = controls.Activate;
         internal int BaseId { get; } = baseId;
-        internal Shortcut Value { get; set; } = Shortcut.Load(System.IO.Path.Combine(AppProfile.DirectoryPath, file), fallback);
+        internal Shortcut? Value { get; set; } = Shortcut.Load(System.IO.Path.Combine(AppProfile.DirectoryPath, file), fallback);
+        internal Shortcut? ActiveValue => Active ? Value : null;
         internal int RegisteredId { get; set; }
         internal bool Active { get; set; }
     }
@@ -159,15 +163,17 @@ internal sealed class ShortcutEditor : IDisposable
     private bool _finishing;
     private bool _disposed;
 
-    internal ShortcutEditor(nint hwnd, TextBox hideBox, TextBox clickThroughBox,
-        Action toggleHide, Action toggleClickThrough, Action<string> status)
+    internal ShortcutEditor(nint hwnd, (TextBox, Button, Action) hide, (TextBox, Button, Action) through,
+        (TextBox, Button, Action) increase, (TextBox, Button, Action) decrease, Action<string> status)
     {
         _hwnd = hwnd;
         _status = status;
         _bindings =
         [
-            new("隐藏", "shortcut.json", hideBox, toggleHide, new(6, 'H'), 0x4721),
-            new("页面穿透", "passthrough-shortcut.json", clickThroughBox, toggleClickThrough, new(6, 'P'), 0x4723)
+            new("隐藏", "shortcut.json", hide, new(6, 'H'), 0x4721),
+            new("页面穿透", "passthrough-shortcut.json", through, new(6, 'P'), 0x4723),
+            new("增加不透明度", "opacity-increase-shortcut.json", increase, null, 0x4725),
+            new("减少不透明度", "opacity-decrease-shortcut.json", decrease, null, 0x4727)
         ];
         _windowProc = Receive;
         _keyboardProc = CaptureKey;
@@ -178,7 +184,7 @@ internal sealed class ShortcutEditor : IDisposable
 
         foreach (var binding in _bindings)
         {
-            try { Replace(binding, binding.Value, persist: false); }
+            try { if (binding.Value is { } saved) Replace(binding, saved, persist: false); }
             catch (Exception ex) { _status(ex.Message); }
             binding.Field.IsReadOnly = true;
             binding.Field.IsTabStop = true;
@@ -187,15 +193,41 @@ internal sealed class ShortcutEditor : IDisposable
             binding.Field.LostFocus += OnBlur;
             binding.Field.PreviewKeyDown += OnKeyDown;
             binding.Field.AddHandler(UIElement.PointerPressedEvent, _pointerHandler, true);
+            binding.ClearButton.Click += OnClearClick;
+            ToolTipService.SetToolTip(binding.ClearButton, $"清除{binding.Name}快捷键");
             Display(binding);
         }
     }
 
     private void Display(Binding binding)
     {
-        binding.Field.Text = binding.Active ? binding.Value.ToString() : "";
-        binding.Field.PlaceholderText = binding.Active ? "按下快捷键" : "设置快捷键";
-        ToolTipService.SetToolTip(binding.Field, $"点击录入{binding.Name}快捷键，支持单按左 / 右修饰键，Esc 取消");
+        binding.Field.Text = binding.Value?.ToString() ?? "";
+        binding.Field.PlaceholderText = "设置快捷键";
+        binding.ClearButton.IsEnabled = binding.Value != null;
+        string state = binding.Value != null && !binding.Active ? "已保存的组合未能启用。" : "";
+        ToolTipService.SetToolTip(binding.Field, $"{state}点击录入{binding.Name}快捷键，支持单按左 / 右修饰键。Backspace 清除，Esc 取消");
+    }
+
+    private void OnClearClick(object sender, RoutedEventArgs args)
+    {
+        if (sender is not Button button) return;
+        var binding = _bindings.FirstOrDefault(b => b.ClearButton == button);
+        if (binding == null) return;
+        EndRecording();
+        try { Clear(binding); _status(""); }
+        catch (Exception ex) { _status(ex.Message); }
+        Display(binding);
+    }
+
+    private void Clear(Binding binding)
+    {
+        // 写入成功后才释放注册；配置保存失败时，原来的快捷键仍可使用。
+        Shortcut.Save(binding.Path, null);
+        if (binding.RegisteredId != 0) UnregisterHotKey(_hwnd, binding.RegisteredId);
+        binding.RegisteredId = 0;
+        binding.Active = false;
+        binding.Value = null;
+        ReleaseUnusedHooks();
     }
 
     private Binding? ForField(object sender) =>
@@ -280,12 +312,12 @@ internal sealed class ShortcutEditor : IDisposable
     private void ReleaseUnusedHooks()
     {
         if (!_disposed && _editing != null) return;
-        if (_mouseHook != 0 && (_disposed || !_bindings.Any(b => b.Active && b.Value.IsTap)))
+        if (_mouseHook != 0 && (_disposed || !_bindings.Any(b => b.ActiveValue?.IsTap == true)))
         {
             UnhookWindowsHookEx(_mouseHook);
             _mouseHook = 0;
         }
-        if (_keyboardHook != 0 && (_disposed || !_bindings.Any(b => b.Active && b.Value.NeedsHook)))
+        if (_keyboardHook != 0 && (_disposed || !_bindings.Any(b => b.ActiveValue?.NeedsHook == true)))
         {
             UnhookWindowsHookEx(_keyboardHook);
             _keyboardHook = 0;
@@ -355,9 +387,9 @@ internal sealed class ShortcutEditor : IDisposable
         {
             foreach (var action in _bindings)
             {
-                if (!action.Active || !action.Value.NeedsHook || action.Value.Key != key) continue;
-                if (tapped && action.Value.IsTap) QueueActivation(action);
-                if (pressed && !modifier && action.Value.Sides == _gesture.Held && GetAsyncKeyState((int)key) >= 0)
+                if (action.ActiveValue is not { NeedsHook: true } shortcut || shortcut.Key != key) continue;
+                if (tapped && shortcut.IsTap) QueueActivation(action);
+                if (pressed && !modifier && shortcut.Sides == _gesture.Held && GetAsyncKeyState((int)key) >= 0)
                 {
                     _consumedKeys.Add(key);
                     QueueActivation(action);
@@ -371,7 +403,7 @@ internal sealed class ShortcutEditor : IDisposable
     private bool HasTapBinding(uint key)
     {
         foreach (var binding in _bindings)
-            if (binding.Active && binding.Value.IsTap && binding.Value.Key == key) return true;
+            if (binding.ActiveValue is { IsTap: true } shortcut && shortcut.Key == key) return true;
         return false;
     }
 
@@ -406,6 +438,12 @@ internal sealed class ShortcutEditor : IDisposable
         try
         {
             if (selected.Key == 0x1B) return;
+            if (selected is { Key: 0x08, Modifiers: 0 })
+            {
+                Clear(binding);
+                _status("");
+                return;
+            }
             if (!selected.IsValid)
                 throw new InvalidOperationException("该按键不可用，请重新点击并录入。");
             Replace(binding, selected, persist: true);
@@ -418,16 +456,18 @@ internal sealed class ShortcutEditor : IDisposable
     private void Replace(Binding binding, Shortcut shortcut, bool persist)
     {
         if (binding.Active && binding.Value == shortcut) return;
-        if (_bindings.Any(other => other != binding && other.Active && other.Value.Overlaps(shortcut)))
-            throw new InvalidOperationException("两个操作需要使用不同的快捷键。");
+        // 已保存但启动时被占用的组合也属于原操作，避免下次启动时两个操作争抢同一个键。
+        var conflict = _bindings.FirstOrDefault(other => other != binding && (persist || other.Active) &&
+            other.Value?.Overlaps(shortcut) == true);
+        if (conflict != null) throw new InvalidOperationException($"此快捷键已分配给「{conflict.Name}」。");
         int next = binding.RegisteredId == binding.BaseId ? binding.BaseId + 1 : binding.BaseId;
         bool registered = false;
         try
         {
             if (shortcut.NeedsHook) EnsureHooks(shortcut.IsTap);
             // Windows reserves an entire modifier family. Probe for occupied chords
-            // but leave the opposite side available to applications and to the second binding.
-            bool alreadyOwned = binding.RegisteredId != 0 && binding.Value.Overlaps(shortcut);
+            // but leave the opposite side available to applications and the other bindings.
+            bool alreadyOwned = binding.RegisteredId != 0 && binding.Value?.Overlaps(shortcut) == true;
             if (!shortcut.IsTap && !alreadyOwned)
             {
                 if (!RegisterHotKey(_hwnd, next, shortcut.Modifiers | 0x4000, shortcut.Key))
@@ -439,7 +479,7 @@ internal sealed class ShortcutEditor : IDisposable
                     registered = false;
                 }
             }
-            if (persist) shortcut.Save(binding.Path);
+            if (persist) Shortcut.Save(binding.Path, shortcut);
             if (binding.RegisteredId != 0) UnregisterHotKey(_hwnd, binding.RegisteredId);
             binding.RegisteredId = registered ? next : 0;
             binding.Value = shortcut;
@@ -458,10 +498,14 @@ internal sealed class ShortcutEditor : IDisposable
         if (msg == WmActivate && (wp & 0xFFFF) == 0 && _editing != null && !_finishing) EndRecording();
         if (msg == WmHotkey)
         {
+            // 清除后重新绑定可能复用注册 ID；同时核对消息中的组合，忽略先前尚未处理的按键。
+            uint key = (uint)((nuint)lp >> 16) & 0xffff;
+            uint modifiers = (uint)lp & 0x0f;
             foreach (var binding in _bindings)
             {
                 if (binding.RegisteredId == 0 || wp != (nuint)binding.RegisteredId) continue;
-                if (_editing == null && !_disposed)
+                if (_editing == null && !_disposed && binding.ActiveValue is { } active &&
+                    active.Key == key && active.Modifiers == modifiers)
                     QueueActivation(binding);
                 return 0;
             }
@@ -469,8 +513,15 @@ internal sealed class ShortcutEditor : IDisposable
         return DefSubclassProc(hwnd, msg, wp, lp);
     }
 
-    private void QueueActivation(Binding binding) =>
-        binding.Field.DispatcherQueue.TryEnqueue(() => { if (!_disposed && _editing == null) binding.Activate(); });
+    private void QueueActivation(Binding binding)
+    {
+        var shortcut = binding.ActiveValue;
+        binding.Field.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_disposed && _editing == null && shortcut != null && ReferenceEquals(binding.ActiveValue, shortcut))
+                binding.Activate();
+        });
+    }
 
     public void Dispose()
     {
@@ -483,6 +534,7 @@ internal sealed class ShortcutEditor : IDisposable
             binding.Field.LostFocus -= OnBlur;
             binding.Field.PreviewKeyDown -= OnKeyDown;
             binding.Field.RemoveHandler(UIElement.PointerPressedEvent, _pointerHandler);
+            binding.ClearButton.Click -= OnClearClick;
             if (binding.RegisteredId != 0) UnregisterHotKey(_hwnd, binding.RegisteredId);
         }
         RemoveWindowSubclass(_hwnd, _windowProc, SubclassId);

@@ -13,6 +13,7 @@ public sealed record TargetChoice(string Display, WindowTarget? Target);
 
 public sealed partial class MainWindow : Window
 {
+    private const int OpacityStep = 10;
     private readonly WindowService _windows = new(Path.Combine(AppProfile.DirectoryPath, "recovery.json"));
     private readonly EffectSession _effects = new();
     private readonly DispatcherQueueTimer _refresh;
@@ -60,8 +61,12 @@ public sealed partial class MainWindow : Window
         _effects.Failed += HandleEffectFailure;
         try
         {
-            _shortcuts = new ShortcutEditor(WindowNative.GetWindowHandle(this), HideShortcutBox,
-                ThroughShortcutBox, () => Run(SwitchVisibility), () => Run(SwitchThrough), Status);
+            _shortcuts = new ShortcutEditor(WindowNative.GetWindowHandle(this),
+                (HideShortcutBox, HideShortcutClear, () => Run(SwitchVisibility)),
+                (ThroughShortcutBox, ThroughShortcutClear, () => Run(SwitchThrough)),
+                (OpacityUpShortcutBox, OpacityUpShortcutClear, () => Run(() => StepOpacity(OpacityStep))),
+                (OpacityDownShortcutBox, OpacityDownShortcutClear, () => Run(() => StepOpacity(-OpacityStep))),
+                Status);
         }
         catch (Exception ex) { Status(ex.Message); }
         AppWindow.Closing += ClosingWindow;
@@ -280,8 +285,7 @@ public sealed partial class MainWindow : Window
     {
         _typing.Stop();
         if (_windows.Target == null || !OpacityInput.IsEnabled) return;
-        string raw = OpacityInput.Text.Trim().TrimEnd('%', '％').Trim();
-        if (!int.TryParse(raw, NumberStyles.None, CultureInfo.CurrentCulture, out int value) || value is < 0 or > 100)
+        if (!TryReadOpacity(out int value))
         {
             if (finalize)
             {
@@ -292,6 +296,23 @@ public sealed partial class MainWindow : Window
         }
         if (value != _requestedOpacity) SetRequestedOpacity(value);
         if (finalize) ShowOpacityNumber();
+    }
+
+    private bool TryReadOpacity(out int value)
+    {
+        string raw = OpacityInput.Text.Trim().TrimEnd('%', '％').Trim();
+        return int.TryParse(raw, NumberStyles.None, CultureInfo.CurrentCulture, out value) && value is >= 0 and <= 100;
+    }
+
+    private void StepOpacity(int delta)
+    {
+        if (!_ready || _windows.Target == null || !OpacityInput.IsEnabled) return;
+        // 数字框延迟提交。若用户刚输入了有效值，从该值步进，只向目标窗口应用一次最终结果。
+        int basis = _typing.IsRunning && TryReadOpacity(out int pending) ? pending : _requestedOpacity;
+        _typing.Stop();
+        int next = Math.Clamp(basis + delta, 0, 100);
+        if (next != _requestedOpacity) SetRequestedOpacity(next);
+        ShowOpacityNumber();
     }
 
     private void ToggleZero(object sender, RoutedEventArgs e) => Run(() =>

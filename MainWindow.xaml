@@ -25,6 +25,15 @@
                 <Setter Property="HorizontalContentAlignment" Value="Center"/>
                 <Setter Property="VerticalContentAlignment" Value="Center"/>
             </Style>
+            <Style x:Key="ClearShortcutButton" TargetType="Button">
+                <Setter Property="Content" Value="⌫"/>
+                <Setter Property="FontFamily" Value="Segoe UI Symbol"/>
+                <Setter Property="FontSize" Value="16"/>
+                <Setter Property="Width" Value="28"/>
+                <Setter Property="MinWidth" Value="0"/>
+                <Setter Property="Height" Value="32"/>
+                <Setter Property="Padding" Value="0"/>
+            </Style>
             <Style x:Key="CaptionButton" TargetType="Button">
                 <Setter Property="Width" Value="32"/>
                 <Setter Property="Height" Value="26"/>
@@ -106,26 +115,43 @@
                           AutomationProperties.AutomationId="GrayBox" Click="ChangeFilters"/>
             </Grid>
 
-            <Grid Grid.Row="2" ColumnSpacing="20">
+            <Grid Grid.Row="2" ColumnSpacing="5" RowSpacing="9">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="6"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <Grid ColumnSpacing="8">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <CheckBox x:Name="HiddenBox" Content="隐藏" Style="{StaticResource PanelCheckBox}"
-                              AutomationProperties.AutomationId="HiddenBox" Click="ToggleHidden"/>
-                    <TextBox x:Name="HideShortcutBox" Grid.Column="1" Style="{StaticResource ShortcutField}"
-                             AutomationProperties.AutomationId="HideShortcutBox" AutomationProperties.Name="隐藏快捷键"/>
-                </Grid>
-                <Grid Grid.Column="1" ColumnSpacing="8">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <CheckBox x:Name="ClickThroughBox" Content="页面穿透" Style="{StaticResource PanelCheckBox}"
-                              ToolTipService.ToolTip="鼠标直接操作目标窗口下方的窗口"
-                              AutomationProperties.AutomationId="ClickThroughBox" Click="ToggleClickThrough"/>
-                    <TextBox x:Name="ThroughShortcutBox" Grid.Column="1" Style="{StaticResource ShortcutField}"
-                             AutomationProperties.AutomationId="ThroughShortcutBox" AutomationProperties.Name="页面穿透快捷键"/>
-                </Grid>
+                <TextBlock Text="增加不透明度" Style="{StaticResource FieldLabel}" ToolTipService.ToolTip="每次增加 10 个百分点"/>
+                <TextBox x:Name="OpacityUpShortcutBox" Grid.Column="1" Style="{StaticResource ShortcutField}"
+                         AutomationProperties.AutomationId="OpacityUpShortcutBox" AutomationProperties.Name="增加不透明度快捷键"/>
+                <Button x:Name="OpacityUpShortcutClear" Grid.Column="2" Style="{StaticResource ClearShortcutButton}"
+                        AutomationProperties.AutomationId="OpacityUpShortcutClear" AutomationProperties.Name="清除增加不透明度快捷键"/>
+                <TextBlock Grid.Column="4" Text="减少不透明度" Style="{StaticResource FieldLabel}" ToolTipService.ToolTip="每次减少 10 个百分点"/>
+                <TextBox x:Name="OpacityDownShortcutBox" Grid.Column="5" Style="{StaticResource ShortcutField}"
+                         AutomationProperties.AutomationId="OpacityDownShortcutBox" AutomationProperties.Name="减少不透明度快捷键"/>
+                <Button x:Name="OpacityDownShortcutClear" Grid.Column="6" Style="{StaticResource ClearShortcutButton}"
+                        AutomationProperties.AutomationId="OpacityDownShortcutClear" AutomationProperties.Name="清除减少不透明度快捷键"/>
+                <CheckBox x:Name="HiddenBox" Grid.Row="1" Content="隐藏" Style="{StaticResource PanelCheckBox}"
+                          AutomationProperties.AutomationId="HiddenBox" Click="ToggleHidden"/>
+                <TextBox x:Name="HideShortcutBox" Grid.Row="1" Grid.Column="1" Style="{StaticResource ShortcutField}"
+                         AutomationProperties.AutomationId="HideShortcutBox" AutomationProperties.Name="隐藏快捷键"/>
+                <Button x:Name="HideShortcutClear" Grid.Row="1" Grid.Column="2" Style="{StaticResource ClearShortcutButton}"
+                        AutomationProperties.AutomationId="HideShortcutClear" AutomationProperties.Name="清除隐藏快捷键"/>
+                <CheckBox x:Name="ClickThroughBox" Grid.Row="1" Grid.Column="4" Content="页面穿透" Style="{StaticResource PanelCheckBox}"
+                          ToolTipService.ToolTip="鼠标直接操作目标窗口下方的窗口"
+                          AutomationProperties.AutomationId="ClickThroughBox" Click="ToggleClickThrough"/>
+                <TextBox x:Name="ThroughShortcutBox" Grid.Row="1" Grid.Column="5" Style="{StaticResource ShortcutField}"
+                         AutomationProperties.AutomationId="ThroughShortcutBox" AutomationProperties.Name="页面穿透快捷键"/>
+                <Button x:Name="ThroughShortcutClear" Grid.Row="1" Grid.Column="6" Style="{StaticResource ClearShortcutButton}"
+                        AutomationProperties.AutomationId="ThroughShortcutClear" AutomationProperties.Name="清除页面穿透快捷键"/>
             </Grid>
 
         </Grid>

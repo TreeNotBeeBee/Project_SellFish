@@ -16,7 +16,7 @@ namespace WindowPilot;
 internal sealed class CompactWindow : IDisposable
 {
     private const int ContentWidth = 536;
-    private const int ContentHeight = 223;
+    private const int ContentHeight = 264;
     private const int FeedbackHeight = 40;
 
     private readonly Window _window;

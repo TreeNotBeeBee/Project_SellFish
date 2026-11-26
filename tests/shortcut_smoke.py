@@ -13,7 +13,7 @@ import win32api
 import win32con
 import win32gui
 
-from ui_smoke import choose, desktop, u, wait, write_setting
+from ui_smoke import alpha, choose, desktop, u, wait, write_setting
 
 
 LCTRL, RCTRL, RALT = 0xA2, 0xA3, 0xA5
@@ -48,9 +48,21 @@ def free_keys():
     raise RuntimeError("The test needs three free Ctrl+F-key and Ctrl+Alt+Shift+F-key combinations.")
 
 
+def close_panel(process, spec):
+    if process.poll() is None and spec.exists(timeout=.5):
+        win32gui.PostMessage(spec.handle, win32con.WM_CLOSE, 0, 0)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        process.wait(timeout=5)
+
+
 def run(exe, profile, title):
     hide = profile / "shortcut.json"
     through = profile / "passthrough-shortcut.json"
+    increase = profile / "opacity-increase-shortcut.json"
+    decrease = profile / "opacity-decrease-shortcut.json"
     initial_hide, initial_through, letter = free_keys()
     write_setting(hide, initial_hide)
     write_setting(through, initial_through)
@@ -86,7 +98,7 @@ def run(exe, profile, title):
             wait(lambda: box.get_value() == "", "recorder is listening")
             assert win32gui.GetForegroundWindow() == panel.handle
             chord(*keys)
-            wait(lambda: json.loads(path.read_text(encoding="utf-8-sig"))["Key"] == keys[-1]
+            wait(lambda: path.exists() and (json.loads(path.read_text(encoding="utf-8-sig")) or {}).get("Key") == keys[-1]
                  and box.get_value() != "", "shortcut recorded")
             return box.get_value()
 
@@ -98,6 +110,7 @@ def run(exe, profile, title):
             assert win32gui.IsWindowVisible(hwnd) and not through_enabled(), message
             print("PASS", message, flush=True)
 
+        assert field("OpacityUpShortcutBox").get_value() == field("OpacityDownShortcutBox").get_value() == ""
         choose(panel, field("TargetBox"), title)
         wait(field("HiddenBox").is_enabled, "bound to disposable target")
         assert "左 Ctrl" in record("ThroughShortcutBox", through, LCTRL)
@@ -160,14 +173,63 @@ def run(exe, profile, title):
         wait(lambda: not win32gui.IsWindowVisible(hwnd), "opposite-side chord can bind a different action")
         chord(RCTRL, letter)
         wait(lambda: win32gui.IsWindowVisible(hwnd), "right Ctrl chord restores target")
+
+        record("OpacityUpShortcutBox", increase, LCTRL, initial_hide)
+        record("OpacityDownShortcutBox", decrease, LCTRL, initial_through)
+        field("OpacityInput").set_edit_text("95")
+        wait(lambda: alpha(hwnd) == round(95 * 255 / 100), "95 percent fixture opacity")
+        focus(hwnd)
+        chord(LCTRL, initial_hide)
+        wait(lambda: alpha(hwnd) == 255, "increase stops at 100 percent")
+        chord(LCTRL, initial_through)
+        wait(lambda: alpha(hwnd) == round(90 * 255 / 100), "decrease subtracts ten percentage points")
+        assert win32gui.GetForegroundWindow() == hwnd
+        field("OpacityInput").set_edit_text("4")
+        wait(lambda: alpha(hwnd) == round(4 * 255 / 100), "four percent fixture opacity")
+        chord(LCTRL, initial_through)
+        wait(lambda: alpha(hwnd) == 0, "decrease stops at zero")
+        chord(LCTRL, initial_hide)
+        wait(lambda: alpha(hwnd) == round(10 * 255 / 100), "increase restores visible opacity from zero")
+
+        # Attempt to record the increase chord on the hide field. The former binding must survive.
+        previous = hide.read_bytes()
+        box = field("HideShortcutBox")
+        box.click_input()
+        wait(lambda: box.get_value() == "", "recording cross-action conflict")
+        chord(LCTRL, initial_hide)
+        wait(lambda: "右 Ctrl" in box.get_value(), "opacity chord cannot replace hide")
+        assert hide.read_bytes() == previous
+
+        for stem, path in (("Hide", hide), ("Through", through), ("OpacityUp", increase), ("OpacityDown", decrease)):
+            field(stem + "ShortcutClear").invoke()
+            wait(lambda: json.loads(path.read_text(encoding="utf-8-sig")) is None and
+                 field(stem + "ShortcutBox").get_value() == "", stem + " clear removes saved binding")
+        focus(hwnd)
+        for former_key in (initial_hide, initial_through):
+            chord(LCTRL, former_key)
+            time.sleep(.18)
+            assert alpha(hwnd) == round(10 * 255 / 100)
+        chord(RCTRL, letter)
+        chord(LCTRL, letter)
+        unchanged("cleared hide and passthrough chords no longer fire")
+        record("OpacityUpShortcutBox", increase, RCTRL, initial_through)
+        box = field("OpacityUpShortcutBox")
+        box.click_input()
+        wait(lambda: box.get_value() == "", "recording clear key")
+        chord(win32con.VK_BACK)
+        wait(lambda: json.loads(increase.read_text(encoding="utf-8-sig")) is None, "bare Backspace clears")
     finally:
-        if controller.poll() is None and spec.exists(timeout=.5):
-            win32gui.PostMessage(spec.handle, win32con.WM_CLOSE, 0, 0)
-        try:
-            controller.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            controller.terminate()
-            controller.wait(timeout=5)
+        close_panel(controller, spec)
+    # An explicitly cleared hide/through binding must remain empty across an actual process restart.
+    controller = subprocess.Popen([str(exe)], cwd=exe.parent, env=env)
+    spec = desktop.window(process=controller.pid, class_name="WinUIDesktopWin32WindowClass", title="sell fish")
+    try:
+        spec.wait("visible", timeout=40)
+        for stem in ("Hide", "Through", "OpacityUp", "OpacityDown"):
+            assert field(stem + "ShortcutBox").get_value() == ""
+        print("PASS all four cleared shortcuts stay unassigned after restart", flush=True)
+    finally:
+        close_panel(controller, spec)
 
 
 def main(exe):
