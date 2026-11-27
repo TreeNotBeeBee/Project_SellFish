@@ -119,14 +119,14 @@ def main(exe):
                 assert win32gui.SendMessage(panel.handle, 0x007F, 1, 0) or win32gui.SendMessage(panel.handle, 0x007F, 0, 0)
                 taskbar = desktop.window(class_name="Shell_TrayWnd")
                 if taskbar.exists():
-                    assert not any("sell fish" in n.window_text().lower() for n in taskbar.descendants(control_type="Button"))
-                second = subprocess.run([str(exe)], cwd=exe.parent, env=env, timeout=15)
-                assert second.returncode == 0 and controller.poll() is None
+                    for band in taskbar.descendants(class_name="MSTaskListWClass"):
+                        assert not any("sell fish" in n.window_text().lower() for n in band.descendants(control_type="Button"))
                 preview = os.environ.get("SELL_FISH_MINI_PREVIEW")
                 if preview: panel.capture_as_image().save(preview)
-                print("PASS fixed mini frame, icon, controller absent from taskbar, duplicate launch", size(), flush=True)
-                control("ExpandButton").invoke()
-                wait(lambda: size() == full, "restore full controller dimensions")
+                print("PASS fixed mini frame, icon, controller absent from running task buttons", size(), flush=True)
+                second = subprocess.run([str(exe)], cwd=exe.parent, env=env, timeout=15)
+                assert second.returncode == 0 and controller.poll() is None
+                wait(lambda: size() == full, "second launch restores full controller dimensions")
             # Drag from a blank point inside the client, not from a control or resize border.
             x, y = win32gui.ClientToScreen(panel.handle, (9, 14))
             before = win32gui.GetWindowRect(panel.handle)

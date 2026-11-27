@@ -18,6 +18,7 @@ internal sealed class CompactWindow : IDisposable
     private const int ContentWidth = 536;
     private const int ContentHeight = 264;
     private const int FeedbackHeight = 40;
+    private const nuint WorkAreaSubclass = 0x5741;
 
     private readonly Window _window;
     private readonly Grid _root;
@@ -35,15 +36,20 @@ internal sealed class CompactWindow : IDisposable
     private readonly MenuFlyoutItem _switchMode = new();
     private readonly nint _hwnd;
     private readonly MenuFlyout _menu = new();
+    private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _dragTimer;
+    private readonly SubclassProc _workAreaProc;
     private readonly long _statusToken;
+    private bool _disposed;
+    private bool _sizeQueued;
     private bool _feedbackVisible;
     private bool _mini;
     private XamlRoot? _xamlRoot;
     private uint _sizeDpi;
+    private (SizeInt32 Request, SizeInt32 Actual)? _lastResize;
     private uint? _dragPointer;
-    private POINT _dragOrigin;
-    private PointInt32 _windowOrigin;
+    private PointInt32 _dragOffset;
+    private uint _dragDpi;
 
     public CompactWindow(Window window, Grid root, ComboBox theme, TextBlock status,
         MiniToggle[] actions, MiniToolbarSettings settings)
@@ -66,7 +72,8 @@ internal sealed class CompactWindow : IDisposable
         _toolbarSettings.Changed += OnToolbarSettingsChanged;
         // A moving window can stay under the same local pointer coordinate. Sampling
         // screen coordinates while held also covers gaps in XAML PointerMoved events.
-        _dragTimer = window.DispatcherQueue.CreateTimer();
+        _dispatcher = window.DispatcherQueue;
+        _dragTimer = _dispatcher.CreateTimer();
         _dragTimer.Interval = TimeSpan.FromMilliseconds(16);
         _dragTimer.Tick += OnDragTick;
 
@@ -79,11 +86,11 @@ internal sealed class CompactWindow : IDisposable
         }
         ExcludeControllerFromSwitchers();
         SizeWindow();
-        var area = DisplayArea.GetFromWindowId(window.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
-        var size = window.AppWindow.Size;
-        window.AppWindow.Move(new PointInt32(
-            area.X + Math.Max(0, (area.Width - size.Width) / 2),
-            area.Y + Math.Max(0, (area.Height - size.Height) / 2)));
+        if (WorkAreaBounds.ForWindow(_hwnd) is { } area) CenterIn(area);
+        window.AppWindow.Changed += OnAppWindowChanged;
+        _workAreaProc = OnWorkAreaMessage;
+        // 即使系统拒绝安装消息监听，拖动和展开时仍会直接读取最新工作区。
+        SetWindowSubclass(_hwnd, _workAreaProc, WorkAreaSubclass, 0);
 
         _collapse.Click += ToggleMode;
         _expand.Click += ToggleMode;
@@ -112,6 +119,54 @@ internal sealed class CompactWindow : IDisposable
     }
 
     private int Pixels(double dips) => (int)Math.Ceiling(dips * _sizeDpi / 96.0);
+
+    private void CenterIn(RectInt32 area)
+    {
+        var size = _window.AppWindow.Size;
+        MoveWithin(new PointInt32(area.X + (area.Width - size.Width) / 2,
+            area.Y + (area.Height - size.Height) / 2), size, area);
+    }
+
+    public void RevealPanel()
+    {
+        EndDrag();
+        if (_window.AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
+            presenter.Restore();
+        SetMiniMode(false);
+        var area = GetCursorPos(out var cursor) ? WorkAreaBounds.ForPoint(cursor) : WorkAreaBounds.ForWindow(_hwnd);
+        if (area.HasValue)
+        {
+            CenterIn(area.Value);
+            // 跨缩放比例找回时，先在目标显示器重算面板尺寸，再以新尺寸居中。
+            SizeWindow();
+            CenterIn(area.Value);
+        }
+        _window.AppWindow.Show();
+        _window.Activate();
+        SetForegroundWindow(_hwnd);
+    }
+
+    private nint OnWorkAreaMessage(nint hwnd, uint message, nuint wp, nint lp, nuint id, nuint data)
+    {
+        // 任务栏移动/改高会广播 WM_SETTINGCHANGE，断开显示器或改变分辨率会广播 WM_DISPLAYCHANGE。
+        if (message is 0x001A or 0x007E) QueueSizeWindow();
+        return DefSubclassProc(hwnd, message, wp, lp);
+    }
+
+    private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (args.DidPositionChange && !_dragPointer.HasValue) QueueSizeWindow();
+    }
+
+    private void QueueSizeWindow()
+    {
+        if (_disposed || _sizeQueued) return;
+        _sizeQueued = _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            _sizeQueued = false;
+            SizeWindow();
+        });
+    }
 
     private void ExcludeControllerFromSwitchers()
     {
@@ -150,6 +205,7 @@ internal sealed class CompactWindow : IDisposable
 
     private void UpdatePresentation()
     {
+        _lastResize = null;
         bool icons = _mini && _toolbarSettings.UsesIcons;
         bool classic = _mini && !icons;
         bool inputMethod = icons && _toolbarSettings.Style == MiniToolbarStyle.InputMethod;
@@ -175,7 +231,7 @@ internal sealed class CompactWindow : IDisposable
         _switchMode.Text = _mini ? "展开主面板" : "收起为工具栏";
         SizeWindow();
         // Windows 10 在后续消息中更新边框尺寸，用最终的非客户区尺寸再核对一次客户区。
-        if (changingBorder) _window.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, SizeWindow);
+        if (changingBorder) QueueSizeWindow();
     }
 
     // Follow the system close path so AppWindow.Closing can cancel a failed target restore.
@@ -196,9 +252,12 @@ internal sealed class CompactWindow : IDisposable
 
     private void SizeWindow()
     {
-        _sizeDpi = Math.Max(96u, GetDpiForWindow(_hwnd));
+        if (_disposed || _window.AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized }
+            || WorkAreaBounds.ForWindow(_hwnd) is not { } area) return;
+        uint dpi = Math.Max(96u, GetDpiForWindow(_hwnd));
+        if (dpi != _sizeDpi) _lastResize = null;
+        _sizeDpi = dpi;
         var appWindow = _window.AppWindow;
-        var area = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
         double width = ContentWidth;
         double height = ContentHeight + (_feedbackVisible ? FeedbackHeight : 0);
         if (_mini)
@@ -218,21 +277,31 @@ internal sealed class CompactWindow : IDisposable
                 height = Math.Max(36, Math.Max(_miniActions.DesiredSize.Height, _caption.DesiredSize.Height));
             }
         }
-        var requested = new SizeInt32(Math.Min(Pixels(width), area.Width), Math.Min(Pixels(height), area.Height));
-        var currentSize = appWindow.ClientSize;
-        if (requested.Width != currentSize.Width || requested.Height != currentSize.Height)
-        {
-            // With a custom caption ResizeClient adds the stock caption height on Windows 10.
-            // Use the live nonclient dimensions, which reflect this HWND's actual frame.
-            var frame = appWindow.Size;
-            appWindow.Resize(new SizeInt32(requested.Width + frame.Width - currentSize.Width,
-                requested.Height + frame.Height - currentSize.Height));
-        }
-        var position = appWindow.Position;
+        // 用实际非客户区尺寸算出整个窗口的大小，边框也需要留在工作区之内。
         var size = appWindow.Size;
-        int x = Math.Clamp(position.X, area.X, Math.Max(area.X, area.X + area.Width - size.Width));
-        int y = Math.Clamp(position.Y, area.Y, Math.Max(area.Y, area.Y + area.Height - size.Height));
-        if (x != position.X || y != position.Y) appWindow.Move(new PointInt32(x, y));
+        var client = appWindow.ClientSize;
+        MoveWithin(appWindow.Position, new SizeInt32(Pixels(width) + size.Width - client.Width,
+            Pixels(height) + size.Height - client.Height), area);
+    }
+
+    private void MoveWithin(PointInt32 destination, SizeInt32 size, RectInt32 area)
+    {
+        var appWindow = _window.AppWindow;
+        size.Width = Math.Min(size.Width, area.Width);
+        size.Height = Math.Min(size.Height, area.Height);
+        var current = appWindow.Size;
+        if (!size.Equals(current) &&
+            !(_lastResize is { } last && last.Request.Equals(size) && last.Actual.Equals(current)))
+        {
+            var proposed = WorkAreaBounds.Clamp(destination, size, area);
+            appWindow.MoveAndResize(new RectInt32(proposed.X, proposed.Y, size.Width, size.Height));
+            // Windows 的最小边框高度可能高于请求值。用落地外框约束位置，并记住结果以免重复缩放。
+            current = appWindow.Size;
+            _lastResize = (size, current);
+        }
+        var point = WorkAreaBounds.Clamp(destination, current, area);
+        if (!appWindow.Position.Equals(point))
+            appWindow.Move(point);
     }
 
     private static string ThemePath => Path.Combine(AppProfile.DirectoryPath, "theme.txt");
@@ -271,8 +340,10 @@ internal sealed class CompactWindow : IDisposable
         if (!IsBlank(args.OriginalSource) || !args.GetCurrentPoint(_root).Properties.IsLeftButtonPressed)
             return;
         if (args.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse ||
-            !GetCursorPos(out _dragOrigin) || !_root.CapturePointer(args.Pointer)) return;
-        _windowOrigin = _window.AppWindow.Position;
+            !GetCursorPos(out var cursor) || !_root.CapturePointer(args.Pointer)) return;
+        var position = _window.AppWindow.Position;
+        _dragOffset = new PointInt32(cursor.X - position.X, cursor.Y - position.Y);
+        _dragDpi = Math.Max(96u, GetDpiForWindow(_hwnd));
         _dragPointer = args.Pointer.PointerId;
         _dragTimer.Start();
         args.Handled = true;
@@ -299,13 +370,14 @@ internal sealed class CompactWindow : IDisposable
 
     private void MoveWithCursor()
     {
-        if (!GetCursorPos(out POINT current)) return;
+        if (!GetCursorPos(out var current) || WorkAreaBounds.ForPoint(current) is not { } area) return;
+        // 跨不同 DPI 的显示器时，抓住的图标或面板空白处也会随窗口缩放。
+        double scale = Math.Max(96u, GetDpiForWindow(_hwnd)) / (double)_dragDpi;
         var destination = new PointInt32(
-            _windowOrigin.X + current.X - _dragOrigin.X,
-            _windowOrigin.Y + current.Y - _dragOrigin.Y);
-        var position = _window.AppWindow.Position;
-        if (position.X != destination.X || position.Y != destination.Y)
-            _window.AppWindow.Move(destination);
+            current.X - (int)Math.Round(_dragOffset.X * scale),
+            current.Y - (int)Math.Round(_dragOffset.Y * scale));
+        // 由鼠标所在的屏幕决定边界；否则面板会被旧屏的边缘挡住，拖不到另一块屏幕。
+        MoveWithin(destination, _window.AppWindow.Size, area);
     }
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs args)
@@ -332,6 +404,7 @@ internal sealed class CompactWindow : IDisposable
         _dragPointer = null;
         _dragTimer.Stop();
         _root.ReleasePointerCaptures();
+        SizeWindow();
     }
 
     private void OnRightTapped(object sender, RightTappedRoutedEventArgs args)
@@ -365,6 +438,9 @@ internal sealed class CompactWindow : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
+        RemoveWindowSubclass(_hwnd, _workAreaProc, WorkAreaSubclass);
+        _window.AppWindow.Changed -= OnAppWindowChanged;
         EndDrag();
         _dragTimer.Tick -= OnDragTick;
         _theme.SelectionChanged -= OnThemeSelected;
@@ -386,10 +462,13 @@ internal sealed class CompactWindow : IDisposable
         _status.UnregisterPropertyChangedCallback(TextBlock.TextProperty, _statusToken);
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X, Y; }
+    private delegate nint SubclassProc(nint hwnd, uint message, nuint wp, nint lp, nuint id, nuint data);
+    [DllImport("comctl32.dll")] private static extern bool SetWindowSubclass(nint hwnd, SubclassProc proc, nuint id, nuint data);
+    [DllImport("comctl32.dll")] private static extern bool RemoveWindowSubclass(nint hwnd, SubclassProc proc, nuint id);
+    [DllImport("comctl32.dll")] private static extern nint DefSubclassProc(nint hwnd, uint message, nuint wp, nint lp);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
-    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT point);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint hwnd);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out PointInt32 point);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int virtualKey);
     [DllImport("user32.dll", ExactSpelling = true)] private static extern bool PostMessageW(nint hwnd, uint message, nuint wParam, nint lParam);
     [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)] private static extern int GetWindowLongW(nint hwnd, int index);

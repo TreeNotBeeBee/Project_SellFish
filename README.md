@@ -13,8 +13,10 @@
 3. **设置或清除快捷键。** 点击对应的快捷键框，按下并松开想用的键即可保存。点框旁的 **⌫**，或在录入时单按 **Backspace**，即可清除这一项。下次启动时仍为空。**Esc** 取消本次录入。可以将 **左 Ctrl** 单独分配给隐藏，将 **右 Ctrl** 单独分配给穿透。单个修饰键在松开时触发，与其他键或鼠标一起使用会取消本次单键动作。新录入的 Ctrl、Alt、Shift、Win 组合区分左右，旧配置继续响应两侧。
 4. **调整不透明度。** 可以为增加和减少分别设置全局快捷键，两项初始均为空。绑定目标窗口后，每按一次增减 **10 个百分点**，最低 0%，最高 100%。要精确设值，在 **不透明度** 框输入 0 至 100 的整数，稍停、按 Enter 或离开输入框即可生效。旁边的按钮可在 0% 与上一次非零数值之间切换。对钉钉等会自行重设透明度的窗口，程序可用独立图层实时混合目标后面的画面。
 5. **反色** 和 **灰度** 可同时开启。隐藏时保留选项，再次显示时恢复组合效果。
-6. 点右上角 **—** 收起为迷你工具栏。输入法外观点最右侧的四格图标展开，其他外观点 **□**。主面板与工具栏共用主题和绑定，尺寸固定。控制面板不占任务栏位置，再次运行程序会定位到已打开的面板。
+6. 点右上角 **—** 收起为迷你工具栏。输入法外观点最右侧的四格图标展开，其他外观点 **□**。主面板和迷你工具栏都可以拖到另一台显示器。拖到桌面边缘或任务栏时，窗口会停在当前屏幕的可用区域内。
 7. 在绑定下拉框选择 **释放并恢复窗口**，或点击 **×** 退出，程序会恢复目标原来的置顶、透明度、可见性和鼠标穿透状态。
+
+**找回面板。** sell fish 运行时，任务栏右下角的通知区域会出现鱼篓图标。点 **∧** 可以查看折叠的图标。单击鱼篓即可在鼠标所在的屏幕中央展开主面板，回到刚才的分页。再次运行 `sell fish.exe` 也能找回已经打开的面板。
 
 ### 分离 Windows 控件
 
@@ -79,6 +81,8 @@ python -X utf8 tests/ui_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/shortcut_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/advanced_ui_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/mini_toolbar_smoke.py "dist/WindowPilot-win-x64/sell fish.exe" --drag
+python -X utf8 tests/work_area_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
+python -X utf8 tests/tray_smoke.py "dist/WindowPilot-win-x64/sell fish.exe" --shell-click
 ```
 
 ## 维护
@@ -90,6 +94,8 @@ python -X utf8 tests/mini_toolbar_smoke.py "dist/WindowPilot-win-x64/sell fish.e
 | GlobalShortcut.cs | 隐藏、穿透和不透明度增减快捷键的录入、清除、冲突检查、系统注册及保存 |
 | CompactWindow.cs / MiniToolbar.cs / ImeToolbar.xaml | 面板收起与展开、拖动、三种工具栏外观、按钮状态同步 |
 | MiniToolbarSettings.cs | 工具栏样式、三个功能位的顺序、经典配置兼容 |
+| WorkAreaBounds.cs | 读取各显示器的可用区域，计算面板可以移动到的边界 |
+| NotificationAreaIcon.cs | 显示鱼篓托盘图标、响应找回面板操作、在资源管理器重启后重新注册图标 |
 | Detached / MainWindow.Advanced.cs | Windows UI Automation 控件选择、浮窗和高级分页 |
 | BackdropOpacityLayer.cs | 用独立的鼠标穿透图层混合实时背景，兼容自行重设透明度的目标 |
 | EffectSession.cs / NativeEffectOverlay.cs | 捕获绑定窗口、执行 Win2D 滤镜并将结果显示在目标位置 |

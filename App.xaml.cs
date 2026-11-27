@@ -50,8 +50,11 @@ public partial class App : Application
             while ((hwnd = FindWindowExW(0, hwnd, "WinUIDesktopWin32WindowClass", "sell fish")) != 0)
             {
                 if (GetPropW(hwnd, InstanceProperty) == 0) continue;
+                // 新版会展开面板并在当前显示器找回；旧版仍可通过原来的窗口激活路径响应。
                 if (IsIconic(hwnd)) ShowWindowAsync(hwnd, 9); // SW_RESTORE
                 SetForegroundWindow(hwnd);
+                if (NotificationAreaIcon.ShowController != 0)
+                    PostMessageW(hwnd, NotificationAreaIcon.ShowController, 0, 0);
                 return true;
             }
             Thread.Sleep(100);
@@ -70,6 +73,7 @@ public partial class App : Application
     [DllImport("user32.dll")] private static extern bool IsIconic(nint hwnd);
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(nint hwnd, int command);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint hwnd);
+    [DllImport("user32.dll", ExactSpelling = true)] private static extern bool PostMessageW(nint hwnd, uint message, nuint wParam, nint lParam);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(nint hwnd, string text, string caption, uint type);

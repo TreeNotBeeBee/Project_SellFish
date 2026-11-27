@@ -23,7 +23,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishTrimmed>false</PublishTrimmed>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <Version>1.3.6</Version>
+    <Version>1.3.7</Version>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="Assets\FishBasket.ico;Assets\FishBasket.png;Assets\InputMethodMark.svg;Assets\InputMethodPreview.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

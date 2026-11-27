@@ -20,6 +20,7 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueueTimer _guard;
     private readonly DispatcherQueueTimer _typing;
     private readonly CompactWindow _panel;
+    private readonly NotificationAreaIcon? _tray;
     private ShortcutEditor? _shortcuts;
     private int _requestedOpacity = 100;
     private int _previousOpacity = 100;
@@ -33,7 +34,8 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "FishBasket.ico"));
+        string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "FishBasket.ico");
+        AppWindow.SetIcon(iconPath);
         MiniToggle[] actions =
         [
             new("hide", HiddenBox, _ => Run(SwitchVisibility), "ImeHideIcon"),
@@ -74,10 +76,13 @@ public sealed partial class MainWindow : Window
                 Status);
         }
         catch (Exception ex) { Status(ex.Message); }
+        try { _tray = new NotificationAreaIcon(this, iconPath, () => Run(_panel.RevealPanel)); }
+        catch (Exception ex) { Status("通知区域图标不可用：" + ex.Message); }
         AppWindow.Closing += ClosingWindow;
         Closed += (_, _) =>
         {
             _ready = false;
+            _tray?.Dispose();
             EndDetachedSession();
             _refresh.Stop();
             _guard.Stop();
