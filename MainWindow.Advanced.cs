@@ -14,46 +14,69 @@ public sealed partial class MainWindow
 
     private void InitializeToolbarSettings(MiniToolbarSettings settings, MiniToggle[] actions)
     {
-        ComboBox[] slots = [MiniSlot1, MiniSlot2, MiniSlot3];
-        var labels = actions.Select(action => (string)action.Source.Content).ToArray();
-        foreach (var box in slots) box.ItemsSource = labels;
-        bool updating = false;
+        var boxes = new Dictionary<string, CheckBox>(StringComparer.OrdinalIgnoreCase);
+        int columns = ToolbarActionOptions.ColumnDefinitions.Count;
+        for (int i = 0; i < actions.Length; i++)
+        {
+            var action = actions[i];
+            var box = new CheckBox
+            {
+                Content = action.Source.Content as string ?? action.Id,
+                Style = (Style)Root.Resources["PanelCheckBox"]
+            };
+            AutomationProperties.SetAutomationId(box, $"ToolbarAction.{action.Id}");
+            boxes.Add(action.Id, box);
+            if (i % columns == 0)
+                ToolbarActionOptions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(box, i / columns);
+            Grid.SetColumn(box, i % columns);
+            ToolbarActionOptions.Children.Add(box);
+            box.Click += (_, _) => Save(() => settings.SetSelected(action.Id, box.IsChecked == true));
+        }
 
         void Refresh()
         {
-            updating = true;
-            try
+            var selected = settings.Slots;
+            MiniStyleBox.SelectedIndex = settings.Style == MiniToolbarStyle.InputMethod ? 1 : 0;
+            foreach (var (id, box) in boxes)
             {
-                MiniStyleBox.SelectedIndex = (int)settings.Style;
-                MiniSlotSettings.Visibility = settings.UsesIcons ? Visibility.Visible : Visibility.Collapsed;
-                for (int i = 0; i < slots.Length; i++)
-                    slots[i].SelectedIndex = Array.FindIndex(actions, action => action.Id == settings.Slots[i]);
+                bool chosen = selected.Contains(id);
+                box.IsChecked = chosen;
+                box.IsEnabled = chosen || selected.Count < MiniToolbarSettings.MaxActions;
             }
-            finally { updating = false; }
+            ToolbarCount.Text = $"已选 {selected.Count} / {MiniToolbarSettings.MaxActions}";
+            ToolbarOrder.Text = selected.Count == 0 ? "未选择功能" :
+                string.Join(" → ", selected.Select(id => (string)boxes[id].Content));
         }
 
-        void Change(Action save)
+        void Save(Action change)
         {
-            if (updating) return;
-            Run(() => { save(); Status(""); });
-            // 选中已占用的功能会交换两个位置；写盘失败时，三个框仍显示原来已保存的配置。
+            Run(() => { change(); Status(""); });
+            // 写盘失败时复选框也要回到上一次成功保存的选择及顺序。
             Refresh();
         }
 
         Refresh();
         MiniStyleBox.SelectionChanged += (_, _) =>
         {
-            if (MiniStyleBox.SelectedIndex >= 0)
-                Change(() => settings.SetStyle((MiniToolbarStyle)MiniStyleBox.SelectedIndex));
+            if (MiniStyleBox.SelectedIndex < 0) return;
+            var style = MiniStyleBox.SelectedIndex == 0 ? MiniToolbarStyle.InitialIcons : MiniToolbarStyle.InputMethod;
+            if (style != settings.Style) Save(() => settings.SetStyle(style));
         };
-        foreach (var box in slots)
-        {
-            int position = Array.IndexOf(slots, box);
-            box.SelectionChanged += (_, _) =>
-            {
-                if (box.SelectedIndex >= 0) Change(() => settings.Assign(position, actions[box.SelectedIndex].Id));
-            };
-        }
+    }
+
+    private void OpenToolbarSettings(object sender, RoutedEventArgs args)
+    {
+        SettingsOverview.Visibility = Visibility.Collapsed;
+        ToolbarSettingsPage.Visibility = Visibility.Visible;
+        ToolbarSettingsBack.Focus(FocusState.Programmatic);
+    }
+
+    private void CloseToolbarSettings(object sender, RoutedEventArgs args)
+    {
+        ToolbarSettingsPage.Visibility = Visibility.Collapsed;
+        SettingsOverview.Visibility = Visibility.Visible;
+        EditToolbarActions.Focus(FocusState.Programmatic);
     }
 
     private void InitializeDetachedControls()
@@ -71,7 +94,13 @@ public sealed partial class MainWindow
         if (!_ready) return;
         BasicPage.Visibility = sender.SelectedItem == BasicTab ? Visibility.Visible : Visibility.Collapsed;
         AdvancedPage.Visibility = sender.SelectedItem == AdvancedTab ? Visibility.Visible : Visibility.Collapsed;
+        ShortcutsPage.Visibility = sender.SelectedItem == ShortcutsTab ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = sender.SelectedItem == SettingsTab ? Visibility.Visible : Visibility.Collapsed;
+        if (sender.SelectedItem != SettingsTab)
+        {
+            ToolbarSettingsPage.Visibility = Visibility.Collapsed;
+            SettingsOverview.Visibility = Visibility.Visible;
+        }
         if (sender.SelectedItem != AdvancedTab) _picking?.Cancel();
         RefreshAdvancedControls();
     }

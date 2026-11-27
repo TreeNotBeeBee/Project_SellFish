@@ -11,7 +11,7 @@ internal sealed record MiniToggle(string Id, CheckBox Source, Action<bool> Apply
 internal sealed class MiniToolbar : IDisposable
 {
     // 输入法图案固定在各自的位置，实际操作和无障碍名称仍由该位置分配的功能提供。
-    private static readonly string[] KeyboardIcons = ["KeyboardLanguage", "KeyboardPunctuation", "KeyboardInput"];
+    private static readonly string[] KeyboardIcons = ["KeyboardLanguage", "KeyboardPunctuation", "KeyboardInput", "KeyboardMicrophone"];
 
     private sealed class ToggleView : IDisposable
     {
@@ -20,13 +20,10 @@ internal sealed class MiniToolbar : IDisposable
         private readonly long _enabledToken;
         public ToggleButton Button { get; }
 
-        public ToggleView(MiniToggle action, Style style, DataTemplate? icon)
+        public ToggleView(MiniToggle action, Style style, DataTemplate icon)
         {
             _action = action;
-            Button = icon != null
-                ? new ToggleButton { Content = icon.LoadContent() }
-                : new CheckBox { Content = action.Source.Content };
-            Button.Style = style;
+            Button = new ToggleButton { Style = style, Content = icon.LoadContent() };
             AutomationProperties.SetAutomationId(Button, $"Mini.{action.Id}");
             var label = action.Source.Content?.ToString() ?? action.Id;
             AutomationProperties.SetName(Button, label);
@@ -66,17 +63,20 @@ internal sealed class MiniToolbar : IDisposable
     public MiniToolbar(IEnumerable<MiniToggle> actions) =>
         _actions = actions.ToDictionary(action => action.Id, StringComparer.OrdinalIgnoreCase);
 
-    public void Show(StackPanel host, IReadOnlyList<string> ids, Style style, ResourceDictionary? icons, bool inputMethod)
+    public void Show(ImeToolbar bar, IReadOnlyList<string> ids, bool inputMethod)
     {
         Clear();
-        _host = host;
+        _host = bar.Actions;
+        bar.SetInputMethodSkin(inputMethod);
+        _host.Visibility = ids.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        var style = (Style)bar.Resources[inputMethod ? "KeyboardToggle" : "ImeToggle"];
         for (int position = 0; position < ids.Count; position++)
         {
             var action = _actions[ids[position]];
             var iconKey = inputMethod ? KeyboardIcons[position] : action.IconKey;
-            var view = new ToggleView(action, style, icons == null ? null : (DataTemplate)icons[iconKey]);
+            var view = new ToggleView(action, style, (DataTemplate)bar.Resources[iconKey]);
             _views.Add(view);
-            host.Children.Add(view.Button);
+            _host.Children.Add(view.Button);
         }
     }
 

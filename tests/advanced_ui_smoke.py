@@ -90,6 +90,7 @@ def test(exe, profile, title):
         views = [desktop.window(handle=h) for h in (first, second)]
         view = next(v for v in views if v.child_window(auto_id="NativeText").wrapper_object().get_value() == "first value")
         view.child_window(auto_id="NativeText").wrapper_object().set_edit_text("控件一已更新")
+        view.child_window(auto_id="NativeTextOptions").wrapper_object().invoke()
         view.child_window(auto_id="ApplyNativeText").wrapper_object().invoke()
         source_edits = [desktop.window(handle=field).wrapper_object() for field in fields]
         wait(lambda: source_edits[0].get_value() == "控件一已更新" and source_edits[1].get_value() == "second value",
@@ -100,7 +101,7 @@ def test(exe, profile, title):
         element("ToolPin").toggle()
         wait(lambda: not pinned(panel.handle) and all(not pinned(h) for h in floating_windows()), "one switch unpins all tools")
         element("CollapseButton").invoke()
-        element("ExpandButton").invoke()
+        element("ImeExpandButton").invoke()
         wait(lambda: element("ToolPin").is_visible(), "expand restores the settings tab")
         element("ToolPin").toggle()
         page("BasicTab")

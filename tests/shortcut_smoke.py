@@ -110,9 +110,10 @@ def run(exe, profile, title):
             assert win32gui.IsWindowVisible(hwnd) and not through_enabled(), message
             print("PASS", message, flush=True)
 
-        assert field("OpacityUpShortcutBox").get_value() == field("OpacityDownShortcutBox").get_value() == ""
         choose(panel, field("TargetBox"), title)
         wait(field("HiddenBox").is_enabled, "bound to disposable target")
+        field("ShortcutsTab").iface_selection_item.Select()
+        assert field("OpacityUpShortcutBox").get_value() == field("OpacityDownShortcutBox").get_value() == ""
         assert "左 Ctrl" in record("ThroughShortcutBox", through, LCTRL)
         assert "右 Ctrl" in record("HideShortcutBox", hide, RCTRL)
         focus()
@@ -176,6 +177,7 @@ def run(exe, profile, title):
 
         record("OpacityUpShortcutBox", increase, LCTRL, initial_hide)
         record("OpacityDownShortcutBox", decrease, LCTRL, initial_through)
+        field("BasicTab").iface_selection_item.Select()
         field("OpacityInput").set_edit_text("95")
         wait(lambda: alpha(hwnd) == round(95 * 255 / 100), "95 percent fixture opacity")
         focus(hwnd)
@@ -192,6 +194,7 @@ def run(exe, profile, title):
         wait(lambda: alpha(hwnd) == round(10 * 255 / 100), "increase restores visible opacity from zero")
 
         # Attempt to record the increase chord on the hide field. The former binding must survive.
+        field("ShortcutsTab").iface_selection_item.Select()
         previous = hide.read_bytes()
         box = field("HideShortcutBox")
         box.click_input()
@@ -225,6 +228,7 @@ def run(exe, profile, title):
     spec = desktop.window(process=controller.pid, class_name="WinUIDesktopWin32WindowClass", title="sell fish")
     try:
         spec.wait("visible", timeout=40)
+        field("ShortcutsTab").iface_selection_item.Select()
         for stem in ("Hide", "Through", "OpacityUp", "OpacityDown"):
             assert field(stem + "ShortcutBox").get_value() == ""
         print("PASS all four cleared shortcuts stay unassigned after restart", flush=True)

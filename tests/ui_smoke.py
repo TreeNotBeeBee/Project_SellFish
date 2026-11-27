@@ -100,6 +100,12 @@ def main(exe):
             panel = spec.wrapper_object()
             def control(id):
                 return spec.child_window(auto_id=id, found_index=0).wrapper_object()
+            def page(tab_id):
+                control(tab_id).iface_selection_item.Select()
+            def mini_action_ids():
+                return [c.element_info.automation_id for c in panel.descendants()
+                        if c.element_info.automation_id.startswith("Mini.")
+                        and c.element_info.automation_id != "Mini.DragHandle" and c.is_visible()]
             combo = control("TargetBox")
             def size():
                 left, top, right, bottom = win32gui.GetWindowRect(panel.handle)
@@ -114,8 +120,7 @@ def main(exe):
                 wait(lambda: size()[1] < full[1] / 2 and size()[0] < full[0], "visible input-method-sized toolbar")
                 verify_fixed()
                 assert win32gui.IsWindowVisible(panel.handle) and not win32gui.IsIconic(panel.handle)
-                assert [c.element_info.automation_id for c in panel.descendants(control_type="CheckBox")
-                        if c.is_visible()] == ["Mini.hide", "Mini.clickThrough", "Mini.topmost"]
+                assert mini_action_ids() == ["Mini.hide", "Mini.clickThrough", "Mini.topmost"]
                 assert win32gui.SendMessage(panel.handle, 0x007F, 1, 0) or win32gui.SendMessage(panel.handle, 0x007F, 0, 0)
                 taskbar = desktop.window(class_name="Shell_TrayWnd")
                 if taskbar.exists():
@@ -139,10 +144,12 @@ def main(exe):
             mouse.move(coords=(x + 70, y + 50))
             time.sleep(.15)
             assert win32gui.GetWindowRect(panel.handle)[:2] == released, "movement must stop on button release"
+            page("SettingsTab")
             choose(panel, control("ThemeBox"), "黑")
             wait(lambda: (profile/"theme.txt").read_text(encoding="utf8").strip()=="dark", "black theme persists")
             probe_mini()
             choose(panel, control("ThemeBox"), "白")
+            page("BasicTab")
             choose(panel, combo, name)
             hidden = control("HiddenBox")
             wait(hidden.is_enabled, "target chosen in fixed binding list")
@@ -166,6 +173,7 @@ def main(exe):
             control("ZeroButton").invoke()
             wait(lambda: alpha(hwnd)==1, "restore filters after zero")
             # Test the recorder with real keys, including another registered shortcut.
+            page("ShortcutsTab")
             hide_field = control("HideShortcutBox")
             hide_field.click_input()
             wait(lambda: hide_field.get_value()=="", "click clears shortcut editor")
@@ -193,13 +201,19 @@ def main(exe):
             chord(new_hide)
             wait(lambda: win32gui.IsWindowVisible(hwnd), "custom shortcut restores the actual window")
             if had_entry: wait(taskbar_entry, "Explorer restored the taskbar button")
+            page("BasicTab")
             choose(panel, combo, "释放")
             wait(lambda: alpha(hwnd)==255 and not (style() & (8|0x20|0x80000)), "release restores native window styles")
             choose(panel, combo, name)
-            (profile/"mini-toolbar.json").write_text('["topmost", "clickThrough", "hide"]', encoding="utf8")
+            page("SettingsTab")
+            control("EditToolbarActions").iface_invoke.Invoke()
+            for name in ("hide", "clickThrough", "clickThrough", "hide"):
+                control("ToolbarAction." + name).iface_toggle.Toggle()
+            control("ToolbarSettingsBack").iface_invoke.Invoke()
+            page("BasicTab")
             control("CollapseButton").invoke()
             wait(lambda: spec.child_window(auto_id="Mini.hide").exists(), "open customized toolbar")
-            actions = [c.element_info.automation_id for c in panel.descendants(control_type="CheckBox") if c.is_visible()]
+            actions = mini_action_ids()
             assert actions == ["Mini.topmost", "Mini.clickThrough", "Mini.hide"], actions
             control("Mini.topmost").toggle()
             wait(lambda: style() & win32con.WS_EX_TOPMOST, "mini button controls target z-order")
@@ -207,11 +221,13 @@ def main(exe):
             wait(lambda: style() & win32con.WS_EX_TRANSPARENT, "mini button enables passthrough")
             control("Mini.hide").toggle()
             wait(lambda: not win32gui.IsWindowVisible(hwnd), "mini button hides target")
-            control("ExpandButton").invoke()
+            control("ImeExpandButton").invoke()
             wait(lambda: hidden.get_toggle_state()==1 and press_box.get_toggle_state()==1, "main and mini controls share state")
             control("CollapseButton").invoke()
-            control("ExitButton").invoke()
+            control("ImeExpandButton")
+            win32gui.PostMessage(panel.handle, win32con.WM_CLOSE, 0, 0)
             wait(lambda: controller.poll() is not None, "close compact panel")
+            assert controller.returncode == 0
             wait(lambda: win32gui.IsWindowVisible(hwnd) and not (style() & (8|0x20|0x80000)), "exit restores hidden mouse-transparent target")
     finally:
         if controller is not None and controller.poll() is None:

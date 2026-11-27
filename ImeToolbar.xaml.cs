@@ -28,6 +28,6 @@ public sealed partial class ImeToolbar : UserControl
         Logo.Source = inputMethod
             ? new SvgImageSource(new Uri("ms-appx:///Assets/InputMethodMark.svg"))
             : new BitmapImage(new Uri("ms-appx:///Assets/FishBasket.png"));
-        AutomationProperties.SetHelpText(Logo, inputMethod ? "输入法图标" : "初始图标");
+        AutomationProperties.SetHelpText(Logo, inputMethod ? "输入法图标" : "初始");
     }
 }

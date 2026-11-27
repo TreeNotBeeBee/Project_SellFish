@@ -69,133 +69,215 @@ def check_drag(panel, logo):
     assert gui.GetWindowRect(panel.handle) == after
 
 
-def verify_default_styles(exe, base):
-    # 1.3.5 users with only the legacy toolbar file keep their classic layout.
-    for previous in (False, True):
-        profile = base / ("existing-classic" if previous else "fresh")
+def field(panel, name):
+    return panel.child_window(auto_id=name, found_index=0).wrapper_object()
+
+
+def visible_ids(panel):
+    return {item.element_info.automation_id for item in panel.descendants() if item.is_visible()}
+
+
+def tab(panel, name):
+    field(panel, name).iface_selection_item.Select()
+    # SelectionItem.Select can return before WinUI rebuilds the page's automation tree.
+    marker = {"BasicTab": "TargetBox", "AdvancedTab": "PickControl",
+              "ShortcutsTab": "HideShortcutBox", "SettingsTab": "MiniStyleBox"}[name]
+    field(panel, marker)
+
+
+def invoke(panel, name):
+    field(panel, name).iface_invoke.Invoke()
+
+
+def toggle(panel, name):
+    field(panel, name).iface_toggle.Toggle()
+
+
+def collapse(panel, actions):
+    invoke(panel, "CollapseButton")
+    field(panel, "ImeExpandButton")
+    expected = ["Mini.DragHandle", *["Mini." + action for action in actions], "ImeExpandButton"]
+
+    def matches():
+        elements = [e for e in panel.descendants() if e.is_visible() and
+                    (e.element_info.automation_id.startswith("Mini.") or e.element_info.automation_id == "ImeExpandButton")]
+        return [e.element_info.automation_id for e in sorted(elements, key=lambda e: e.rectangle().left)] == expected
+
+    wait(matches, "mini toolbar order " + ", ".join(expected))
+    return gui.GetClientRect(panel.handle)[2:]
+
+
+def verify_migrations(exe, base):
+    cases = [
+        ("fresh", None, None, "初始", ["hide", "clickThrough", "topmost"]),
+        ("legacy-only", None, ["INVERT", "hide", "invert", "unknown"], "初始", ["invert", "hide"]),
+        ("classic", {"Style": "classic", "Slots": ["topmost", "gray", "hide"]},
+         ["gray", "clickThrough", "topmost", "hide", "invert"], "初始", ["gray", "clickThrough", "topmost", "hide"]),
+        ("old-input-method", {"Style": "input-method", "Slots": ["invert", "gray", "hide"]},
+         ["topmost"], "输入法", ["invert", "gray", "hide"]),
+        ("empty", {"Style": "input-method", "Slots": []}, ["hide"], "输入法", []),
+    ]
+    for name, appearance, classic, expected_style, actions in cases:
+        profile = base / name
         profile.mkdir()
-        if previous:
-            (profile / "mini-toolbar.json").write_text('["hide"]', encoding="utf8")
-        for _ in range(1 if previous else 2):
-            with controller(exe, profile) as panel:
-                panel.child_window(auto_id="SettingsTab").wrapper_object().iface_selection_item.Select()
-                box = panel.child_window(auto_id="MiniStyleBox").wrapper_object()
-                expected = "经典" if previous else "初始图标"
-                assert box.selected_text() == expected, (expected, box.selected_text())
-                print("PASS default style", expected, flush=True)
+        if classic is not None:
+            (profile / "mini-toolbar.json").write_text(json.dumps(classic), encoding="utf8")
+        if appearance is not None:
+            (profile / "mini-appearance.json").write_text(json.dumps(appearance), encoding="utf8")
+        with controller(exe, profile) as panel:
+            tab(panel, "SettingsTab")
+            assert field(panel, "MiniStyleBox").selected_text() == expected_style, name
+            collapse(panel, actions)
+            saved = json.loads((profile / "mini-appearance.json").read_text(encoding="utf-8-sig"))
+            assert saved["Slots"] == actions
+            assert saved["Style"] == ("initial" if expected_style == "初始" else "input-method")
+            print("PASS toolbar configuration", name, flush=True)
+
+
+def check_pages(panel, profile):
+    tabs = ["BasicTab", "AdvancedTab", "ShortcutsTab", "SettingsTab"]
+    assert sorted(tabs, key=lambda key: field(panel, key).rectangle().left) == tabs
+    assert [field(panel, key).window_text() for key in tabs] == ["基础", "进阶", "快捷键", "设置"]
+    basic = {"TargetBox", "TopmostBox", "OpacityInput", "ZeroButton", "InvertBox", "GrayBox", "HiddenBox", "ClickThroughBox"}
+    recorders = {stem + suffix for stem in ("Hide", "Through", "OpacityUp", "OpacityDown")
+                 for suffix in ("ShortcutBox", "ShortcutClear")}
+    settings = {"ThemeBox", "ToolPin", "MiniStyleBox", "EditToolbarActions"}
+    tab(panel, "BasicTab")
+    ids = visible_ids(panel)
+    assert basic <= ids and ids.isdisjoint(recorders | settings)
+    tab(panel, "AdvancedTab")
+    ids = visible_ids(panel)
+    assert {"PickControl", "PickRegion"} <= ids and ids.isdisjoint(recorders | settings), ids
+    tab(panel, "ShortcutsTab")
+    ids = visible_ids(panel)
+    assert recorders <= ids and ids.isdisjoint(basic | settings)
+    for stem in ("Hide", "Through", "OpacityUp", "OpacityDown"):
+        box = field(panel, stem + "ShortcutBox").rectangle()
+        clear = field(panel, stem + "ShortcutClear").rectangle()
+        left, top, right, bottom = gui.GetWindowRect(panel.handle)
+        assert left <= box.left < box.right <= clear.left < clear.right <= right
+        assert top < max(box.top, clear.top) < min(box.bottom, clear.bottom) < bottom
+    assert field(panel, "HideShortcutBox").get_value()
+    invoke(panel, "ThroughShortcutClear")
+    wait(lambda: json.loads((profile / "passthrough-shortcut.json").read_text(encoding="utf-8-sig")) is None,
+         "clearing a shortcut from its own page persists")
+    tab(panel, "SettingsTab")
+    ids = visible_ids(panel)
+    assert settings <= ids and ids.isdisjoint(basic | recorders)
+    assert not any(key.startswith("ToolbarAction.") for key in ids)
+    combo = field(panel, "MiniStyleBox")
+    combo.expand()
+    items = [item for item in combo.descendants(control_type="ListItem") if item.is_visible()]
+    assert {item.window_text() for item in items} == {"初始", "输入法"}
+    next(item for item in items if item.window_text() == "初始").iface_selection_item.Select()
+    print("PASS four page order, controls, shortcut fields, style choices", flush=True)
 
 
 def test(exe, profile, drag=False):
-    verify_default_styles(exe, profile)
+    verify_migrations(exe, profile)
     title = "0001-Mini-QA-" + uuid.uuid4().hex[:8]
     target = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("ui_smoke.py")), "--target", title])
     write_setting(profile / "shortcut.json", 0x84)
     write_setting(profile / "passthrough-shortcut.json", 0x85)
-    legacy = profile / "mini-toolbar.json"
-    original = b'["topmost", "hide"]'
-    legacy.write_bytes(original)
+    original_shortcut = (profile / "shortcut.json").read_bytes()
+    (profile / "mini-toolbar.json").write_text('["invert"]', encoding="utf8")
     appearance = profile / "mini-appearance.json"
-    old_icons = b'{"Style":"ime","Slots":["topmost","hide","clickThrough"]}'
-    appearance.write_bytes(old_icons)
+    appearance.write_text('{"Style":"ime","Slots":["topmost","hide","clickThrough"]}', encoding="utf8")
     (profile / "theme.txt").write_text("dark", encoding="utf8")
     try:
         wait(lambda: gui.FindWindow(None, title), "test target opened")
         hwnd = gui.FindWindow(None, title)
-        def style(handle, flag):
-            return bool(gui.GetWindowLong(handle, wc.GWL_EXSTYLE) & flag)
-        for restart in (False, True):
-            with controller(exe, profile) as panel:
-                def field(name):
-                    return panel.child_window(auto_id=name, found_index=0).wrapper_object()
-                def tab(name):
-                    field(name).iface_selection_item.Select()
-                def active(name):
-                    return panel.child_window(auto_id=name, found_index=0).exists(timeout=.1)
-                def invoke(name):
-                    field(name).iface_invoke.Invoke()
-                def toggle(name):
-                    field(name).iface_toggle.Toggle()
-                def mini_ids():
-                    return [n.element_info.automation_id for n in panel.descendants()
-                            if n.element_info.automation_id.startswith("Mini.") and n.is_visible()]
-                def collapse(expected):
-                    invoke("CollapseButton")
-                    wait(lambda: mini_ids() == expected, "toolbar order " + ", ".join(expected))
-                classic = ["Mini.topmost", "Mini.hide"]
-                if restart:
-                    collapse(["Mini.DragHandle", "Mini.gray", "Mini.invert", "Mini.hide"])
-                    assert field("Mini.DragHandle").element_info.element.CurrentHelpText == "输入法图标"
-                    assert all(not field(name).is_enabled() for name in mini_ids()[1:])
-                    assert style(panel.handle, wc.WS_EX_TOPMOST)
-                    invoke("ImeExpandButton")
-                    tab("SettingsTab")
-                    assert field("MiniStyleBox").selected_text() == "输入法"
-                    choose_item(panel, field("MiniStyleBox"), "经典")
-                    collapse(classic)
-                    assert active("ExitButton") and not active("Mini.DragHandle")
-                    assert legacy.read_bytes() == original
-                    continue
-                collapse(["Mini.DragHandle", "Mini.topmost", "Mini.hide", "Mini.clickThrough"])
-                assert field("Mini.DragHandle").element_info.element.CurrentHelpText == "初始图标"
-                assert appearance.read_bytes() == old_icons
-                invoke("ImeExpandButton")
-                choose_item(panel, field("TargetBox"), title)
-                wait(lambda: field("HiddenBox").is_enabled(), "bound to the test window")
-                tab("SettingsTab")
-                assert field("MiniStyleBox").selected_text() == "初始图标"
-                toggle("ToolPin")
-                choose_item(panel, field("MiniStyleBox"), "输入法")
-                choose_item(panel, field("MiniSlot2"), "页面穿透")
-                layout = ["Mini.DragHandle", "Mini.topmost", "Mini.clickThrough", "Mini.hide"]
-                full_client = gui.GetClientRect(panel.handle)
-                collapse(layout)
-                assert not active("ExitButton")
-                logo = field("Mini.DragHandle")
-                assert logo.element_info.control_type == "Image" and not logo.element_info.element.CurrentIsKeyboardFocusable
-                assert logo.element_info.element.CurrentHelpText == "输入法图标"
-                assert [field(name).window_text() for name in layout[1:]] == ["始终置顶", "页面穿透", "隐藏"]
-                assert not logo.element_info.element.GetCurrentPropertyValue(30031)  # UIA_IsInvokePatternAvailablePropertyId
-                buttons = [*mini_ids(), "ImeExpandButton"]
-                assert sorted(buttons, key=lambda name: field(name).rectangle().left) == [*layout, "ImeExpandButton"]
-                commands = {node.element_info.automation_id for node in panel.descendants()
-                            if node.element_info.control_type in ("Button", "CheckBox") and node.is_visible()}
-                assert commands == set(layout[1:] + ["ImeExpandButton"]), commands
-                # The invisible native frame varies with Windows. The reference strip is 164 × 22 DIPs inside it.
-                _, _, width, height = gui.GetClientRect(panel.handle)
-                scale = ctypes.windll.user32.GetDpiForWindow(panel.handle) / 96
-                assert abs(width / scale - 164) <= 2 and abs(height / scale - 22) <= 1, (width, height, scale)
-                assert style(panel.handle, wc.WS_EX_TOPMOST)
-                if drag:
-                    check_drag(panel, logo)
-                toggle("Mini.topmost")
-                wait(lambda: style(hwnd, wc.WS_EX_TOPMOST), "mini pin applies to target")
-                toggle("Mini.topmost")
-                wait(lambda: not style(hwnd, wc.WS_EX_TOPMOST), "target unpins independently of the panel")
-                toggle("Mini.clickThrough")
-                wait(lambda: style(hwnd, wc.WS_EX_TRANSPARENT), "mini click-through applies to target")
-                toggle("Mini.clickThrough")
-                toggle("Mini.hide")
-                wait(lambda: not gui.IsWindowVisible(hwnd), "mini hide applies to target")
-                invoke("ImeExpandButton")
-                wait(lambda: active("MiniStyleBox"), "expanding returns to Settings")
-                wait(lambda: gui.GetClientRect(panel.handle) == full_client, "expanding restores the full client size")
-                choose_item(panel, field("MiniSlot1"), "灰度")
-                choose_item(panel, field("MiniSlot2"), "反色")
-                tab("BasicTab")
-                choose_item(panel, field("ThemeBox"), "白")
-                collapse(["Mini.DragHandle", "Mini.gray", "Mini.invert", "Mini.hide"])
-                assert [field("Mini." + name).window_text() for name in ("gray", "invert", "hide")] == ["灰度", "反色", "隐藏"]
-                toggle("Mini.gray")
-                toggle("Mini.invert")
-                invoke("ImeExpandButton")
-                assert field("GrayBox").iface_toggle.CurrentToggleState and field("InvertBox").iface_toggle.CurrentToggleState
-                toggle("GrayBox")
-                toggle("InvertBox")
-                toggle("HiddenBox")
-                wait(lambda: gui.IsWindowVisible(hwnd), "original target restored")
-                assert legacy.read_bytes() == original
-                assert json.loads(appearance.read_text(encoding="utf8")) == {"Style": "input-method", "Slots": ["gray", "invert", "hide"]}
-                print("PASS all five IME action assignments and independent classic configuration", flush=True)
+        def flag(window, style):
+            return bool(gui.GetWindowLong(window, wc.GWL_EXSTYLE) & style)
+
+        with controller(exe, profile) as panel:
+            collapse(panel, ["topmost", "hide", "clickThrough"])
+            invoke(panel, "ImeExpandButton")
+            check_pages(panel, profile)
+            choose_item(panel, field(panel, "ThemeBox"), "白")
+            wait(lambda: (profile / "theme.txt").read_text(encoding="utf-8-sig").strip() == "light", "theme applied from Settings")
+            toggle(panel, "ToolPin")
+            tab(panel, "BasicTab")
+            choose_item(panel, field(panel, "TargetBox"), title)
+            wait(lambda: field(panel, "HiddenBox").is_enabled(), "bound to the test window")
+            tab(panel, "SettingsTab")
+            full_client = gui.GetClientRect(panel.handle)
+            invoke(panel, "EditToolbarActions")
+            def selected(action):
+                return field(panel, "ToolbarAction." + action).iface_toggle.CurrentToggleState == 1
+            def change(action):
+                toggle(panel, "ToolbarAction." + action)
+            for action in ("topmost", "hide", "clickThrough"):
+                assert selected(action)
+                change(action)
+            assert json.loads(appearance.read_text(encoding="utf-8-sig"))["Slots"] == []
+            empty_size = collapse(panel, [])
+            invoke(panel, "ImeExpandButton")
+            assert field(panel, "ToolbarSettingsBack").is_visible()
+            change("gray")
+            one_size = collapse(panel, ["gray"])
+            assert empty_size[0] < one_size[0]
+            invoke(panel, "ImeExpandButton")
+
+            for action in ("hide", "invert", "topmost"):
+                change(action)
+            assert not field(panel, "ToolbarAction.clickThrough").is_enabled()
+            four = ["gray", "hide", "invert", "topmost"]
+            full_size = collapse(panel, four)
+            assert full_size[0] > one_size[0]
+            invoke(panel, "ImeExpandButton")
+            # Removing an action opens a slot. Reselecting it appends it to the end.
+            change("gray")
+            assert field(panel, "ToolbarAction.clickThrough").is_enabled()
+            change("gray")
+            four = ["hide", "invert", "topmost", "gray"]
+            assert field(panel, "ToolbarOrder").window_text() == "隐藏 → 反色 → 始终置顶 → 灰度"
+            invoke(panel, "ToolbarSettingsBack")
+            choose_item(panel, field(panel, "MiniStyleBox"), "输入法")
+            width, height = collapse(panel, four)
+            scale = ctypes.windll.user32.GetDpiForWindow(panel.handle) / 96
+            assert abs(width / scale - 164) <= 2 and abs(height / scale - 22) <= 1, (width, height, scale)
+            logo = field(panel, "Mini.DragHandle")
+            assert logo.element_info.control_type == "Image" and not logo.element_info.element.CurrentIsKeyboardFocusable
+            assert not logo.element_info.element.GetCurrentPropertyValue(30031)
+            if drag:
+                check_drag(panel, logo)
+            assert [field(panel, "Mini." + action).window_text() for action in four] == ["隐藏", "反色", "始终置顶", "灰度"]
+            assert flag(panel.handle, wc.WS_EX_TOPMOST)
+            toggle(panel, "Mini.topmost")
+            wait(lambda: flag(hwnd, wc.WS_EX_TOPMOST), "third mini action pins the target")
+            toggle(panel, "Mini.topmost")
+            wait(lambda: not flag(hwnd, wc.WS_EX_TOPMOST), "target unpins independently of panel")
+            toggle(panel, "Mini.hide")
+            wait(lambda: not gui.IsWindowVisible(hwnd), "first mini action hides the target")
+            toggle(panel, "Mini.invert")
+            toggle(panel, "Mini.gray")
+            invoke(panel, "ImeExpandButton")
+            wait(lambda: gui.GetClientRect(panel.handle) == full_client, "expanded panel restores its client size")
+            tab(panel, "BasicTab")
+            assert all(field(panel, name).iface_toggle.CurrentToggleState for name in ("InvertBox", "GrayBox", "HiddenBox"))
+            for name in ("InvertBox", "GrayBox", "HiddenBox"):
+                toggle(panel, name)
+            wait(lambda: gui.IsWindowVisible(hwnd), "original target restored")
+            assert json.loads(appearance.read_text(encoding="utf-8-sig"))["Slots"] == four
+            assert (profile / "shortcut.json").read_bytes() == original_shortcut
+
+        with controller(exe, profile) as panel:
+            tab(panel, "SettingsTab")
+            assert field(panel, "MiniStyleBox").selected_text() == "输入法"
+            invoke(panel, "EditToolbarActions")
+            toggle(panel, "ToolbarAction.gray")
+            toggle(panel, "ToolbarAction.clickThrough")
+            invoke(panel, "ToolbarSettingsBack")
+            choose_item(panel, field(panel, "MiniStyleBox"), "初始")
+            tab(panel, "BasicTab")
+            choose_item(panel, field(panel, "TargetBox"), title)
+            collapse(panel, ["hide", "invert", "topmost", "clickThrough"])
+            toggle(panel, "Mini.clickThrough")
+            wait(lambda: flag(hwnd, wc.WS_EX_TRANSPARENT), "fourth initial-style action enables click-through")
+            toggle(panel, "Mini.clickThrough")
+            wait(lambda: not flag(hwnd, wc.WS_EX_TRANSPARENT), "restored click-through")
+            print("PASS both skins, zero-to-four actions, append order, fifth-choice limit and restart", flush=True)
     finally:
         target.terminate()
         target.wait(timeout=6)

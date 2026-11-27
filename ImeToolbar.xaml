@@ -61,7 +61,7 @@
             </DataTemplate>
             <DataTemplate x:Key="ImeTopmostIcon"><FontIcon FontSize="16" Glyph="&#xE718;"/></DataTemplate>
             <DataTemplate x:Key="ImeThroughIcon"><FontIcon FontSize="16" Glyph="&#xE7C9;"/></DataTemplate>
-            <!-- 三个图案对应固定位置。第三个图案里的输入板和话筒共用同一个点击区域。 -->
+            <!-- 输入法样式按位置显示图案；输入板与话筒各占一个可独立操作的按钮。 -->
             <DataTemplate x:Key="KeyboardLanguage">
                 <Grid Width="31" Height="22">
                     <PathIcon Width="14" Height="15" Data="F0 M6.3,0 H8 V2.5 H14 V10.8 H8 V15 H6.3 V10.8 H0 V2.5 H6.3 Z M1.6,4 V9.1 H6.3 V4 Z M8,4 V9.1 H12.4 V4 Z"/>
@@ -74,14 +74,16 @@
                 </Grid>
             </DataTemplate>
             <DataTemplate x:Key="KeyboardInput">
-                <Grid Width="54" Height="22">
-                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Horizontal" Spacing="10">
-                        <PathIcon Width="16" Height="14" Data="F0 M0.5,0 H12 V2 H13.3 C16.8,2 17.1,7.8 13.1,8 H12 V11.8 H0.5 Z
-                            M2,1.5 V10.3 H10.5 V1.5 Z M12,3.6 V6.4 H13 C14.8,6.4 14.9,3.6 13,3.6 Z M0,12.8 H12 V14 H0 Z"/>
-                        <PathIcon Width="15" Height="15" Data="F0 M7.5,0 C10,0 11.7,1.7 11.7,4 V7.1 C11.7,9.5 10,11.1 7.5,11.1 C5,11.1 3.3,9.5 3.3,7.1 V4 C3.3,1.7 5,0 7.5,0 Z
-                            M7.5,1.4 C5.9,1.4 4.9,2.5 4.9,4 V7.1 C4.9,8.7 5.9,9.7 7.5,9.7 C9.1,9.7 10.1,8.7 10.1,7.1 V4 C10.1,2.5 9.1,1.4 7.5,1.4 Z
-                            M0,7 H1.5 C1.7,10.7 3.8,13.2 7.5,13.2 C11.2,13.2 13.3,10.7 13.5,7 H15 C14.8,11.7 12.1,14.8 7.5,14.8 C2.9,14.8 0.2,11.7 0,7 Z"/>
-                    </StackPanel>
+                <Grid Width="27" Height="22">
+                    <PathIcon Width="16" Height="14" Data="F0 M0.5,0 H12 V2 H13.3 C16.8,2 17.1,7.8 13.1,8 H12 V11.8 H0.5 Z
+                        M2,1.5 V10.3 H10.5 V1.5 Z M12,3.6 V6.4 H13 C14.8,6.4 14.9,3.6 13,3.6 Z M0,12.8 H12 V14 H0 Z"/>
+                </Grid>
+            </DataTemplate>
+            <DataTemplate x:Key="KeyboardMicrophone">
+                <Grid Width="26" Height="22">
+                    <PathIcon Width="15" Height="15" Data="F0 M7.5,0 C10,0 11.7,1.7 11.7,4 V7.1 C11.7,9.5 10,11.1 7.5,11.1 C5,11.1 3.3,9.5 3.3,7.1 V4 C3.3,1.7 5,0 7.5,0 Z
+                        M7.5,1.4 C5.9,1.4 4.9,2.5 4.9,4 V7.1 C4.9,8.7 5.9,9.7 7.5,9.7 C9.1,9.7 10.1,8.7 10.1,7.1 V4 C10.1,2.5 9.1,1.4 7.5,1.4 Z
+                        M0,7 H1.5 C1.7,10.7 3.8,13.2 7.5,13.2 C11.2,13.2 13.3,10.7 13.5,7 H15 C14.8,11.7 12.1,14.8 7.5,14.8 C2.9,14.8 0.2,11.7 0,7 Z"/>
                 </Grid>
             </DataTemplate>
             <DataTemplate x:Key="KeyboardExpand">
@@ -166,7 +168,7 @@
         <Grid x:Name="DragGrip" x:FieldModifier="internal" Width="28" Height="24" Background="Transparent"
               ToolTipService.ToolTip="拖动工具栏">
             <Image x:Name="Logo" Width="21" Height="21" Stretch="Uniform" Source="ms-appx:///Assets/FishBasket.png"
-                   AutomationProperties.HelpText="初始图标"
+                   AutomationProperties.HelpText="初始"
                    AutomationProperties.AutomationId="Mini.DragHandle" AutomationProperties.Name="sell fish，拖动工具栏"/>
         </Grid>
         <StackPanel x:Name="Actions" x:FieldModifier="internal" Orientation="Horizontal" Spacing="1"

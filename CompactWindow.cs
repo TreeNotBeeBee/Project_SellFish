@@ -26,11 +26,9 @@ internal sealed class CompactWindow : IDisposable
     private readonly ComboBox _theme;
     private readonly TextBlock _status;
     private readonly Grid _fullPanel;
-    private readonly StackPanel _miniActions;
     private readonly StackPanel _caption;
     private readonly Border _outline;
     private readonly Button _collapse;
-    private readonly Button _expand;
     private readonly Button _exit;
     private readonly MiniToolbar _toolbar;
     private readonly MiniToolbarSettings _toolbarSettings;
@@ -63,11 +61,9 @@ internal sealed class CompactWindow : IDisposable
         _status = status;
         _hwnd = WindowNative.GetWindowHandle(window);
         _fullPanel = (Grid)root.FindName("PanelContent");
-        _miniActions = (StackPanel)root.FindName("MiniActions");
         _caption = (StackPanel)root.FindName("CaptionButtons");
         _outline = (Border)root.FindName("PanelOutline");
         _collapse = (Button)root.FindName("CollapseButton");
-        _expand = (Button)root.FindName("ExpandButton");
         _exit = (Button)root.FindName("ExitButton");
         _toolbar = new MiniToolbar(actions);
         _toolbarSettings = settings;
@@ -98,7 +94,6 @@ internal sealed class CompactWindow : IDisposable
         SetWindowSubclass(_hwnd, _workAreaProc, WorkAreaSubclass, 0);
 
         _collapse.Click += ToggleMode;
-        _expand.Click += ToggleMode;
         _imeBar.Expand.Click += ToggleMode;
         _exit.Click += RequestClose;
         _switchMode.Text = "收起为工具栏";
@@ -218,32 +213,20 @@ internal sealed class CompactWindow : IDisposable
         if (_mini == mini) return;
         _mini = mini;
         UpdatePresentation();
-        var focus = mini ? (_toolbarSettings.UsesIcons ? _imeBar.Expand : _expand) : _collapse;
+        var focus = mini ? _imeBar.Expand : _collapse;
         focus.Focus(FocusState.Programmatic);
     }
 
     private void UpdatePresentation()
     {
         _lastResize = null;
-        bool icons = _mini && _toolbarSettings.UsesIcons;
-        bool classic = _mini && !icons;
-        bool inputMethod = icons && _toolbarSettings.Style == MiniToolbarStyle.InputMethod;
+        bool inputMethod = _mini && _toolbarSettings.Style == MiniToolbarStyle.InputMethod;
         _outline.Visibility = inputMethod ? Visibility.Collapsed : Visibility.Visible;
-        _fullPanel.Visibility = _collapse.Visibility = _mini ? Visibility.Collapsed : Visibility.Visible;
-        _miniActions.Visibility = _expand.Visibility = classic ? Visibility.Visible : Visibility.Collapsed;
-        _caption.Visibility = icons ? Visibility.Collapsed : Visibility.Visible;
-        _imeBar.Visibility = icons ? Visibility.Visible : Visibility.Collapsed;
-        _caption.VerticalAlignment = classic ? VerticalAlignment.Center : VerticalAlignment.Top;
-        _caption.Margin = new Thickness(0, classic ? 0 : 2, 3, 0);
+        _fullPanel.Visibility = _caption.Visibility = _mini ? Visibility.Collapsed : Visibility.Visible;
+        _imeBar.Visibility = _mini ? Visibility.Visible : Visibility.Collapsed;
         if (_mini)
-        {
-            if (icons) _imeBar.SetInputMethodSkin(inputMethod);
-            var host = icons ? _imeBar.Actions : _miniActions;
-            var style = icons ? _imeBar.Resources[inputMethod ? "KeyboardToggle" : "ImeToggle"] : _root.Resources["ToolbarToggle"];
-            _toolbar.Show(host, _toolbarSettings.GetActionIds(), (Style)style, icons ? _imeBar.Resources : null, inputMethod);
-        }
+            _toolbar.Show(_imeBar, _toolbarSettings.Slots, inputMethod);
         else _toolbar.Clear();
-        _switchMode.Text = _mini ? "展开主面板" : "收起为工具栏";
         SizeWindow();
     }
 
@@ -276,19 +259,9 @@ internal sealed class CompactWindow : IDisposable
         if (_mini)
         {
             var unlimited = new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity);
-            if (_toolbarSettings.UsesIcons)
-            {
-                _imeBar.Measure(unlimited);
-                width = _imeBar.DesiredSize.Width;
-                height = _imeBar.DesiredSize.Height;
-            }
-            else
-            {
-                _miniActions.Measure(unlimited);
-                _caption.Measure(unlimited);
-                width = _miniActions.DesiredSize.Width + _caption.DesiredSize.Width;
-                height = Math.Max(36, Math.Max(_miniActions.DesiredSize.Height, _caption.DesiredSize.Height));
-            }
+            _imeBar.Measure(unlimited);
+            width = _imeBar.DesiredSize.Width;
+            height = _imeBar.DesiredSize.Height;
         }
         // 用实际非客户区尺寸算出整个窗口的大小，边框也需要留在工作区之内。
         var size = appWindow.Size;
@@ -422,7 +395,7 @@ internal sealed class CompactWindow : IDisposable
 
     private void OnRightTapped(object sender, RightTappedRoutedEventArgs args)
     {
-        if ((_mini && _toolbarSettings.UsesIcons) || !IsBlank(args.OriginalSource)) return;
+        if (_mini || !IsBlank(args.OriginalSource)) return;
         args.Handled = true;
         _menu.ShowAt(_root, new FlyoutShowOptions { Position = args.GetPosition(_root) });
     }
@@ -431,7 +404,7 @@ internal sealed class CompactWindow : IDisposable
     {
         for (var node = source as DependencyObject; node != null; node = VisualTreeHelper.GetParent(node))
         {
-            // 只把输入法工具栏的鱼篓区域当作拖动面，不吞掉中间三个按钮的点击。
+            // 工具栏左端用于拖动，中间的功能按钮仍然接收各自的点击。
             if (node == _root || node == _imeBar.DragGrip) return true;
             if (node is Control) return false;
         }
@@ -467,7 +440,6 @@ internal sealed class CompactWindow : IDisposable
         _root.Loaded -= OnLoaded;
         if (_xamlRoot != null) _xamlRoot.Changed -= OnXamlRootChanged;
         _collapse.Click -= ToggleMode;
-        _expand.Click -= ToggleMode;
         _imeBar.Expand.Click -= ToggleMode;
         _exit.Click -= RequestClose;
         _toolbarSettings.Changed -= OnToolbarSettingsChanged;

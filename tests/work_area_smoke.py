@@ -92,12 +92,12 @@ def test(exe, profile):
             print("Monitor", label, "screen", monitor["Monitor"], "work", area, flush=True)
             check_edges(hwnd, area, label + " full panel")
             check_display_notifications(hwnd, area)
-            for skin, expand in (("经典", "ExpandButton"), ("初始图标", "ImeExpandButton"), ("输入法", "ImeExpandButton")):
+            for skin in ("初始", "输入法"):
                 choose_item(panel, control("MiniStyleBox"), skin)
                 control("CollapseButton").iface_invoke.Invoke()
-                control(expand)
+                control("ImeExpandButton")
                 check_edges(hwnd, area, f"{label} {skin}")
-                control(expand).iface_invoke.Invoke()
+                control("ImeExpandButton").iface_invoke.Invoke()
                 control("MiniStyleBox")
                 # A panel expanded at the bottom-right must move far enough back into view.
                 x, y, right, bottom = area
