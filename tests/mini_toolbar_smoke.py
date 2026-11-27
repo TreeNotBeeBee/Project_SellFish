@@ -44,6 +44,10 @@ def controller(exe, profile):
         except subprocess.TimeoutExpired:
             proc.terminate()
             proc.wait(timeout=5)
+        # A native focus crash during teardown also closes the window. Check the exit
+        # code on a successful test path, while preserving any earlier test failure.
+        if sys.exc_info()[0] is None and proc.returncode != 0:
+            raise AssertionError(f"controller exited with status {proc.returncode:#x}")
 
 
 def check_drag(panel, logo):
