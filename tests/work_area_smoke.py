@@ -111,6 +111,14 @@ def test(exe, profile):
                     time.sleep(.05)
                 print("PASS", skin, "expands inside", area, flush=True)
 
+        # An Invoke callback can still be on WinUI's native focus stack when its button
+        # disappears. Exercise repeated input-method frame changes on this same window.
+        for _ in range(12):
+            control("CollapseButton").iface_invoke.Invoke()
+            control("ImeExpandButton").iface_invoke.Invoke()
+            assert control("MiniStyleBox").selected_text() == "输入法"
+        print("PASS repeated collapse and expand preserves Settings", flush=True)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

@@ -44,6 +44,7 @@ internal sealed class CompactWindow : IDisposable
     private bool _sizeQueued;
     private bool _feedbackVisible;
     private bool _mini;
+    private bool? _pendingMini;
     private XamlRoot? _xamlRoot;
     private uint _sizeDpi;
     private (SizeInt32 Request, SizeInt32 Actual)? _lastResize;
@@ -129,6 +130,7 @@ internal sealed class CompactWindow : IDisposable
 
     public void RevealPanel()
     {
+        _pendingMini = null;
         EndDrag();
         if (_window.AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
             presenter.Restore();
@@ -187,7 +189,20 @@ internal sealed class CompactWindow : IDisposable
         }
     }
 
-    private void ToggleMode(object sender, RoutedEventArgs args) => SetMiniMode(!_mini);
+    private void ToggleMode(object sender, RoutedEventArgs args)
+    {
+        bool next = !_mini;
+        if (_pendingMini == next) return;
+        _pendingMini = next;
+        // 原生按钮（包括 UIA Invoke）仍在处理焦点时不能重建边框或隐藏该按钮。
+        // 等 Click 返回再切换。期间托盘找回可取消此次收起。
+        if (!_dispatcher.TryEnqueue(() =>
+        {
+            if (_disposed || _pendingMini != next) return;
+            _pendingMini = null;
+            SetMiniMode(next);
+        })) _pendingMini = null;
+    }
 
     private void OnToolbarSettingsChanged()
     {
