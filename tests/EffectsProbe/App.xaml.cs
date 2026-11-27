@@ -170,6 +170,8 @@ public partial class App : Application
             result["zeroOverlay"] = !EffectNative.IsWindowVisible(effects.OverlayHandle);
             Checkpoint("check tint strengths, combinations and source alpha");
             await CheckTintAsync(effects, result, Calibrate, combinedPixel);
+            Checkpoint("key out part of the target over a changing background");
+            await CheckColorKeyAsync(effects, result, Calibrate);
             effects.Stop();
             string[] checks = [
                 "lowAlphaSourceCorrect", "invertCorrect", "combinedCorrect", "stableFilteredCorrect",
@@ -178,7 +180,8 @@ public partial class App : Application
                 "staticRepaintImmediate", "minimizedOverlay", "restoredOverlay", "hiddenOverlay",
                 "reshownOverlay", "zeroOverlay", "tintQuarter", "tintFull", "tintColorOnlyChange",
                 "tintStacked", "tintZeroWithEffects", "tintHitTarget", "tintHidden", "tintReshown", "tintZeroAlone",
-                "tintRestoredOriginal", "tintAlphaMask"
+                "tintRestoredOriginal", "tintAlphaMask", "keyExact", "keyLiveBackdrop", "keyPartial",
+                "keyRange", "keyStacked", "keyDisabled", "keySourceAlpha", "keyCustomRgb", "keyNeutralRgb"
             ];
             result["success"] = !result.ContainsKey("rendererFailure") && Convert.ToInt64(result["invertFrames"]) > 0
                 && checks.All(check => (bool)result[check]);
@@ -289,6 +292,82 @@ public partial class App : Application
         uint translucent = BitConverter.ToUInt32(actual, 4);
         result["tintAlphaPixel"] = translucent.ToString("X8");
         result["tintAlphaMask"] = BitConverter.ToUInt32(actual, 0) == 0 && MatchesPixel(translucent, 0x80482C38, 1);
+
+        using var keepRed = EffectSession.CreateColorKeyEffect(source, blue, 0);
+        using (var drawing = output.CreateDrawingSession())
+        {
+            drawing.Clear(Color.FromArgb(0, 0, 0, 0));
+            drawing.DrawImage(keepRed);
+        }
+        actual = output.GetPixelBytes();
+        result["keySourcePixels"] = Convert.ToHexString(actual);
+        result["keySourceAlpha"] = actual.SequenceEqual(sourcePixels);
+
+        // Distinguish luminosity as well as hue. An exact white key must keep black and gray.
+        uint[] swatches = [0xFF3486DE, 0xFF3486DD, 0xFF000000, 0xFF808080, 0xFFFFFFFF];
+        using var palette = CanvasBitmap.CreateFromBytes(device, swatches.SelectMany(BitConverter.GetBytes).ToArray(),
+            swatches.Length, 1, DirectXPixelFormat.B8G8R8A8UIntNormalized);
+        using var paletteOutput = new CanvasRenderTarget(device, swatches.Length, 1, 96);
+        void CheckSwatch(string name, Color keyColor, int keyedIndex)
+        {
+            using var keyed = EffectSession.CreateColorKeyEffect(palette, keyColor, 0);
+            using (var drawing = paletteOutput.CreateDrawingSession())
+            {
+                drawing.Clear(Color.FromArgb(0, 0, 0, 0));
+                drawing.DrawImage(keyed);
+            }
+            byte[] rgba = paletteOutput.GetPixelBytes();
+            result[name + "Pixels"] = Convert.ToHexString(rgba);
+            result[name] = swatches.Select((c, i) => BitConverter.ToUInt32(rgba, i * 4) == (i == keyedIndex ? 0 : c)).All(x => x);
+        }
+        CheckSwatch("keyCustomRgb", Color.FromArgb(255, 52, 134, 222), 0);
+        CheckSwatch("keyNeutralRgb", Color.FromArgb(255, 255, 255, 255), 4);
+    }
+
+    private async Task CheckColorKeyAsync(EffectSession effects, Dictionary<string, object> result, Func<string, string> calibrate)
+    {
+        // Two child swatches belong to the same captured HWND, alongside the red client background.
+        void AddSwatch(int x, uint colorRef)
+        {
+            nint child = EffectNative.CreateWindowEx(0, "WindowPilot.EffectsProbe", "", 0x50000000,
+                x, 70, 70, 70, _target, 0, EffectNative.GetModuleHandle(null), 0);
+            if (child == 0) throw new InvalidOperationException("Cannot create test swatch.");
+            SetBackground(child, colorRef);
+        }
+        AddSwatch(30, 0x00FF0000);
+        AddSwatch(130, 0x00FE0000); // Off by just one blue level.
+        var blue = Color.FromArgb(255, 0, 0, 255);
+        var yellow = Color.FromArgb(255, 255, 255, 0);
+        var samples = new[] { new EffectNative.Point(65, 100), new EffectNative.Point(165, 100), new EffectNative.Point(265, 100) };
+        for (int i = 0; i < samples.Length; i++) ClientToScreen(_target, ref samples[i]);
+        async Task Check(string name, params uint[] expected)
+        {
+            uint[] actual = [];
+            for (int i = 0; i < 40; i++)
+            {
+                await Task.Delay(32);
+                actual = samples.Select(p => 0xFF000000 | Convert.ToUInt32(calibrate(ScreenPixel(p.X, p.Y)), 16)).ToArray();
+                if (actual.Zip(expected, (a, e) => MatchesPixel(a, e, 2)).All(v => v)) break;
+            }
+            result[name + "Pixels"] = actual.Select(x => x.ToString("X8")).ToArray();
+            result[name] = actual.Zip(expected, (a, e) => MatchesPixel(a, e, 2)).All(v => v);
+        }
+
+        SetLayeredWindowAttributes(_target, 0, 1, 2);
+        SetBackground(_backdrop, 0x0000FF00);
+        effects.Update(_target, false, false, 100, false, false, keyColor: blue, keyStrength: 100);
+        await Check("keyExact", 0xFF00FF00, 0xFF0000FE, 0xFFFF0000);
+        SetBackground(_backdrop, 0x00FFFFFF);
+        await Check("keyLiveBackdrop", 0xFFFFFFFF, 0xFF0000FE, 0xFFFF0000);
+        effects.Update(_target, false, false, 100, false, false, keyColor: blue, keyStrength: 50);
+        await Check("keyPartial", 0xFF8080FF, 0xFF0000FE, 0xFFFF0000);
+        effects.Update(_target, false, false, 100, false, false, keyColor: blue, keyRange: 8, keyStrength: 100);
+        await Check("keyRange", 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFF0000);
+        effects.Update(_target, true, true, 50, false, false, yellow, 100, blue, 0, 100);
+        await Check("keyStacked", 0xFFFFFFFF, 0xFFFFFF80, 0xFFFFFF80);
+        effects.Update(_target, false, false, 100, false, false, keyColor: blue, keyStrength: 0);
+        SetLayeredWindowAttributes(_target, 0, 255, 2);
+        await Check("keyDisabled", 0xFF0000FF, 0xFF0000FE, 0xFFFF0000);
     }
 
     private static bool MatchesPixel(uint actual, uint expected, int tolerance)
@@ -313,6 +392,7 @@ public partial class App : Application
     }
     private static void SetBackground(nint hwnd, uint color)
     {
+        if (Brushes.TryGetValue(hwnd, out nint oldBrush)) EffectNative.DeleteObject(oldBrush);
         Brushes[hwnd] = CreateSolidBrush(color);
         InvalidateRect(hwnd, 0, true);
     }
@@ -351,5 +431,6 @@ public partial class App : Application
     [DllImport("gdi32.dll")] private static extern bool BitBlt(nint destination, int x, int y, int width, int height, nint source, int sx, int sy, uint operation);
     [DllImport("user32.dll")] private static extern bool InvalidateRect(nint hwnd, nint rect, bool erase);
     [DllImport("user32.dll")] private static extern bool GetClientRect(nint hwnd, out EffectNative.Rect rect);
+    [DllImport("user32.dll")] private static extern bool ClientToScreen(nint hwnd, ref EffectNative.Point point);
     [DllImport("user32.dll")] private static extern int FillRect(nint dc, ref EffectNative.Rect rect, nint brush);
 }

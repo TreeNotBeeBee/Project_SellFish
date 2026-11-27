@@ -33,7 +33,7 @@ public sealed partial class MainWindow : Window
     private bool _ready;
     private long _retryGuardAt;
 
-    private bool HasFilters => _invert || _gray || _tintStrength > 0;
+    private bool HasFilters => _invert || _gray || _tintStrength > 0 || EffectiveKeyStrength > 0;
 
     public MainWindow()
     {
@@ -46,6 +46,15 @@ public sealed partial class MainWindow : Window
         ShowTintColor(_defaultTint);
         _opacityInput = new(this, OpacityInput, "不透明度", () => _requestedOpacity, SetRequestedOpacity);
         _tintInput = new(this, TintStrengthInput, "滤镜强度", () => _tintStrength, SetTintStrength);
+        _keyRangeInput = new(this, KeyRangeInput, "颜色范围", () => _keyRange, SetKeyRange);
+        _keyStrengthInput = new(this, KeyStrengthInput, "过滤强度", () => _keyStrength, SetKeyStrength);
+        KeyColorPicker.Color = DefaultKeyColor;
+        ShowKeyColor(DefaultKeyColor);
+        KeyColorPicker.ColorChanged += (_, args) =>
+        {
+            ShowKeyColor(args.NewColor);
+            if (_ready && _windows.Target != null && EffectiveKeyStrength > 0) Run(ApplyAppearance);
+        };
         TintColorPicker.ColorChanged += (_, args) =>
         {
             ShowTintColor(args.NewColor);
@@ -65,10 +74,14 @@ public sealed partial class MainWindow : Window
         _panel = new CompactWindow(this, Root, ThemeBox, StatusText, actions, toolbarSettings);
         PanelContent.RegisterPropertyChangedCallback(UIElement.VisibilityProperty, (_, _) =>
         {
-            if (PanelContent.Visibility == Visibility.Collapsed) _windowPicking?.Cancel();
+            if (PanelContent.Visibility == Visibility.Collapsed)
+            {
+                _windowPicking?.Cancel();
+                _colorPicking?.Cancel();
+            }
         });
         InitializeToolbarSettings(toolbarSettings, actions);
-        InitializeDetachedControls();
+        InitializeToolPin();
         _refresh = DispatcherQueue.CreateTimer();
         _refresh.Interval = TimeSpan.FromSeconds(2);
         _refresh.Tick += (_, _) => Run(RefreshState);
@@ -94,11 +107,13 @@ public sealed partial class MainWindow : Window
             _ready = false;
             _windowPicking?.Cancel();
             _tray?.Dispose();
-            EndDetachedSession();
+            _colorPicking?.Cancel();
             _refresh.Stop();
             _guard.Stop();
             _opacityInput.Stop();
             _tintInput.Stop();
+            _keyRangeInput.Stop();
+            _keyStrengthInput.Stop();
             _shortcuts?.Dispose();
             _effects.Dispose();
             _panel.Dispose();
@@ -217,7 +232,7 @@ public sealed partial class MainWindow : Window
             TargetBox.IsDropDownOpen = false;
             SyncControls();
             Status(hint);
-            var target = await NativeControlPicker.PickWindowAsync(cancellation.Token);
+            var target = await ScreenPicker.PickWindowAsync(cancellation.Token);
             // 点击已捕获时仍可能切页或关闭面板，过期的结果不能建立新绑定。
             if (_ready && !cancellation.IsCancellationRequested) BindTarget(target);
         }
@@ -240,8 +255,7 @@ public sealed partial class MainWindow : Window
         try { _windows.Bind(target); }
         catch { TargetBox.SelectedIndex = -1; throw; }
         _requestedOpacity = _windows.Opacity ?? 100;
-        ResetFilters();
-        TintColorPicker.Color = _defaultTint;
+        ResetBindingFilters();
         _retryGuardAt = 0;
         ShowBoundChoice(target);
         _opacityInput.ShowValue();
@@ -267,7 +281,7 @@ public sealed partial class MainWindow : Window
             TintColorButton.IsEnabled = TintStrengthInput.IsEnabled = supported;
             InvertBox.IsChecked = _invert;
             GrayBox.IsChecked = _gray;
-            RefreshAdvancedControls();
+            RefreshColorKeyControls(supported);
         }
         finally { _updating = false; }
     }
@@ -280,16 +294,18 @@ public sealed partial class MainWindow : Window
 
     private void Release()
     {
-        // 恢复窗口前撤销两项延迟提交，避免把旧输入应用到下一次绑定。
+        // 恢复窗口前撤销延迟提交与屏幕取色，避免把旧输入应用到下一次绑定。
         _opacityInput.Stop();
         _tintInput.Stop();
+        _keyRangeInput.Stop();
+        _keyStrengthInput.Stop();
+        _colorPicking?.Cancel();
         _pendingChoice = null;
         TintColorButton.Flyout.Hide();
-        EndDetachedSession();
+        KeyColorButton.Flyout.Hide();
         _effects.Stop();
         _windows.Release();
-        ResetFilters();
-        TintColorPicker.Color = _defaultTint;
+        ResetBindingFilters();
         _requestedOpacity = 100;
         _opacityInput.ShowValue();
         SyncControls();
@@ -380,6 +396,18 @@ public sealed partial class MainWindow : Window
         _invert = _gray = false;
         _tintStrength = 0;
         _tintInput.ShowValue();
+        KeyEnabled.IsChecked = false;
+    }
+
+    private void ResetBindingFilters()
+    {
+        ResetFilters();
+        TintColorPicker.Color = _defaultTint;
+        KeyColorPicker.Color = DefaultKeyColor;
+        _keyRange = 0;
+        _keyStrength = 100;
+        _keyRangeInput.ShowValue();
+        _keyStrengthInput.ShowValue();
     }
 
     private void ApplyAppearance()
@@ -393,7 +421,7 @@ public sealed partial class MainWindow : Window
             if (render) _windows.SetOpacityByte(1);
             else _windows.SetOpacity(_requestedOpacity);
             if (render) _effects.Update(target.Handle, _invert, _gray, _requestedOpacity, false, _windows.IsTopmost,
-                TintColorPicker.Color, _tintStrength);
+                TintColorPicker.Color, _tintStrength, KeyColorPicker.Color, _keyRange, EffectiveKeyStrength);
         }
         catch
         {

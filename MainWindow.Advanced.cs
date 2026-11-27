@@ -2,13 +2,20 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Windows.UI;
 
 namespace WindowPilot;
 
 public sealed partial class MainWindow
 {
-    private readonly Dictionary<string, DetachedWindow> _detached = [];
-    private CancellationTokenSource? _picking;
+    private static readonly Color DefaultKeyColor = Color.FromArgb(255, 0, 0, 255);
+    private readonly PercentageInput _keyRangeInput;
+    private readonly PercentageInput _keyStrengthInput;
+    private CancellationTokenSource? _colorPicking;
+    private int _keyRange;
+    private int _keyStrength = 100;
+
+    private int EffectiveKeyStrength => KeyEnabled.IsChecked == true ? _keyStrength : 0;
     private bool _pinned;
     private static string PinPath => Path.Combine(AppProfile.DirectoryPath, "tool-topmost.txt");
 
@@ -79,14 +86,13 @@ public sealed partial class MainWindow
         EditToolbarActions.Focus(FocusState.Programmatic);
     }
 
-    private void InitializeDetachedControls()
+    private void InitializeToolPin()
     {
         try { _pinned = File.Exists(PinPath) && File.ReadAllText(PinPath).Trim() == "1"; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         { Status("无法读取面板置顶设置。"); }
         ToolPin.IsChecked = _pinned;
-        ApplyToolAppearance();
-        ThemeBox.SelectionChanged += (_, _) => ApplyToolAppearance();
+        ApplyToolPin();
     }
 
     private void PageChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
@@ -102,109 +108,85 @@ public sealed partial class MainWindow
             SettingsOverview.Visibility = Visibility.Visible;
         }
         if (sender.SelectedItem != BasicTab) _windowPicking?.Cancel();
-        if (sender.SelectedItem != AdvancedTab) _picking?.Cancel();
-        RefreshAdvancedControls();
+        if (sender.SelectedItem != AdvancedTab) _colorPicking?.Cancel();
     }
 
     private void SetToolPin(object sender, RoutedEventArgs args) => Run(() =>
     {
         _pinned = ToolPin.IsChecked == true;
-        ApplyToolAppearance();
+        ApplyToolPin();
         Directory.CreateDirectory(AppProfile.DirectoryPath);
         File.WriteAllText(PinPath + ".tmp", _pinned ? "1" : "0");
         File.Move(PinPath + ".tmp", PinPath, true);
         Status("");
     });
 
-    private void ApplyToolAppearance()
+    private void ApplyToolPin()
     {
         if (AppWindow.Presenter is OverlappedPresenter presenter && presenter.IsAlwaysOnTop != _pinned)
             presenter.IsAlwaysOnTop = _pinned;
-        foreach (var view in _detached.Values) view.SetAppearance(_pinned, Root.RequestedTheme);
     }
 
-    private void RefreshAdvancedControls()
+    private void RefreshColorKeyControls(bool supported)
     {
-        string? unavailable = _windows.Target == null ? "先到「基础」绑定要操作的窗口。" :
-            _windows.IsHidden ? "先显示目标窗口，再选择控件。" :
-            _windows.IsClickThrough ? "先关闭目标窗口的页面穿透，再选择控件。" :
-            _requestedOpacity == 0 ? "先调高目标窗口的不透明度，再选择控件。" : null;
-        if (unavailable != null) _picking?.Cancel();
-        PickControl.IsEnabled = PickRegion.IsEnabled = unavailable == null && _picking == null;
-        string hint = unavailable ?? (_picking != null
-            ? "单击目标窗口中的文字或控件，按 Esc 取消。"
-            : "选择控件后，点输入框可编辑，点网页正文可跟随阅读。");
+        if (!supported) _colorPicking?.Cancel();
+        bool editing = supported && _colorPicking == null;
+        KeyEnabled.IsEnabled = KeyColorButton.IsEnabled = KeyEyedropper.IsEnabled = editing;
+        KeyRangeInput.IsEnabled = KeyStrengthInput.IsEnabled = editing;
+        string hint = _windows.Target == null ? "先到「基础」绑定要过滤颜色的窗口。" :
+            !supported ? "此窗口不支持颜色过滤。" :
+            _colorPicking != null ? "单击屏幕取色，按 Esc 取消。请选取目标的原始颜色。" :
+            "按窗口原色匹配，调大颜色范围可包含近似色。强度 100% 时，匹配处显示下方画面。";
         if (AdvancedHint.Text != hint) AdvancedHint.Text = hint;
     }
 
-    private async void PickNativeControl(object sender, RoutedEventArgs args) => await PickControlAsync(outputRegion: false);
-    private async void PickOutputRegion(object sender, RoutedEventArgs args) => await PickControlAsync(outputRegion: true);
-
-    private async Task PickControlAsync(bool outputRegion)
+    private void ShowKeyColor(Color color)
     {
-        if (_windows.Target is not { } target || _picking != null) return;
+        KeySwatchBrush.Color = color;
+        KeyHex.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+        AutomationProperties.SetName(KeyColorButton, "选择要过滤的颜色 " + KeyHex.Text);
+    }
+
+    private void ToggleColorKey(object sender, RoutedEventArgs args)
+    {
+        if (_ready && !_updating && _windows.Target != null && KeyEnabled.IsEnabled)
+            Run(ApplyAppearance);
+    }
+
+    private void SetKeyRange(int value)
+    {
+        _keyRange = value;
+        if (EffectiveKeyStrength > 0) ApplyAppearance();
+        Status("");
+    }
+
+    private void SetKeyStrength(int value)
+    {
+        _keyStrength = value;
+        if (KeyEnabled.IsChecked == true) ApplyAppearance();
+        Status("");
+    }
+
+    private async void PickScreenColor(object sender, RoutedEventArgs args)
+    {
+        if (!_ready || _colorPicking != null || !KeyEyedropper.IsEnabled || _windows.Target is not { } target) return;
         using var cancellation = new CancellationTokenSource();
-        _picking = cancellation;
-        RefreshAdvancedControls();
+        _colorPicking = cancellation;
         try
         {
-            var source = await NativeControlPicker.PickAsync(target, cancellation.Token, outputRegion);
-            // 点选期间可以释放或更换目标。只有原绑定仍有效，才把新来源交给浮窗。
-            if (cancellation.IsCancellationRequested || _windows.Target != target || !_windows.IsAlive())
-            { source.Dispose(); return; }
-            if (_detached.TryGetValue(source.Key, out var open))
-            { source.Dispose(); open.Activate(); Status(""); return; }
-            DetachedWindow view;
-            try
-            {
-                view = source switch
-                {
-                    NativeTextRegion region => new NativeRegionWindow(region),
-                    NativeControlBinding binding => new NativeTextWindow(binding),
-                    _ => throw new InvalidOperationException("不支持的控件类型。")
-                };
-            }
-            catch { source.Dispose(); throw; }
-            ShowDetached(view, source.Key, source.Label);
+            SyncControls();
             Status("");
+            var color = await ScreenPicker.PickColorAsync(cancellation.Token);
+            // 取色可跨屏、跨窗口。等待点击期间，原绑定可能已释放、关闭或切换。
+            if (_ready && !cancellation.IsCancellationRequested && _windows.Target == target && _windows.IsAlive())
+                KeyColorPicker.Color = color;
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { if (!cancellation.IsCancellationRequested) Status(ex.Message); }
+        catch (Exception ex) { if (_ready && !cancellation.IsCancellationRequested) Status(ex.Message); }
         finally
         {
-            if (_picking == cancellation) _picking = null;
-            if (_ready) RefreshAdvancedControls();
+            _colorPicking = null;
+            if (_ready) Run(SyncControls);
         }
-    }
-
-    private void ShowDetached(DetachedWindow window, string key, string label)
-    {
-        string initialTitle = window.Title;
-        int suffix = 1;
-        while (_detached.Values.Any(w => w.Title == window.Title))
-            window.Title = $"{initialTitle} ({++suffix})";
-        if (suffix > 1) label += $" ({suffix})";
-        var row = new Grid { ColumnSpacing = 8 };
-        row.ColumnDefinitions.Add(new ColumnDefinition());
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var name = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis };
-        var close = new Button { Content = "关闭", Padding = new Thickness(7, 1, 7, 1), MinHeight = 24 };
-        AutomationProperties.SetName(close, "关闭" + label);
-        Grid.SetColumn(close, 1);
-        close.Click += (_, _) => window.Close();
-        row.Children.Add(name);
-        row.Children.Add(close);
-        _detached.Add(key, window);
-        DetachedRows.Children.Add(row);
-        window.Closed += (_, _) => { _detached.Remove(key); DetachedRows.Children.Remove(row); };
-        try { window.SetAppearance(_pinned, Root.RequestedTheme); window.Show(); }
-        catch { window.Close(); throw; }
-    }
-
-    private void EndDetachedSession()
-    {
-        _picking?.Cancel();
-        foreach (var view in _detached.Values.ToArray()) view.Close();
     }
 }

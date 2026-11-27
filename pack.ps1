@@ -8,7 +8,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = (Resolve-Path -LiteralPath $PublishPath).Path
 $manifest = 'sell-fish-files.txt'
 $files = @(Get-Content -LiteralPath (Join-Path $root $manifest) -Encoding UTF8) + $manifest
-foreach ($required in @('sell fish.exe', 'sell fish.dll', 'Interop.UIAutomationClient.dll', 'README.md', 'THIRD-PARTY-NOTICES.md')) {
+foreach ($required in @('sell fish.exe', 'sell fish.dll', 'README.md', 'THIRD-PARTY-NOTICES.md')) {
     if ($required -notin $files) { throw "Missing distribution file: $required. Build with build.ps1 first." }
 }
 $archive = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ArchivePath)

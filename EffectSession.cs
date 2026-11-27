@@ -35,6 +35,8 @@ public sealed class EffectSession : IDisposable
     private int _opacity = 100;
     private Color _tintColor;
     private int _tintStrength;
+    private Color _keyColor;
+    private int _keyRange, _keyStrength;
     private int _pending;
     private int _generation;
     private long _lastFrame;
@@ -59,15 +61,18 @@ public sealed class EffectSession : IDisposable
     }
 
     public void Update(nint hwnd, bool invert, bool grayscale, int opacity, bool hidden, bool topmost,
-        Color tintColor = default, int tintStrength = 0)
+        Color tintColor = default, int tintStrength = 0, Color keyColor = default, int keyRange = 0, int keyStrength = 0)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!_dispatcher.HasThreadAccess) throw new InvalidOperationException("颜色效果必须在界面线程更新。");
         if (opacity is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(opacity));
         if (tintStrength is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(tintStrength));
-        if (hwnd == 0 || (!invert && !grayscale && tintStrength == 0)) { Stop(); return; }
+        if (keyRange is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(keyRange));
+        if (keyStrength is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(keyStrength));
+        if (hwnd == 0 || (!invert && !grayscale && tintStrength == 0 && keyStrength == 0)) { Stop(); return; }
         bool changed = _invert != invert || _grayscale != grayscale || _opacity != opacity ||
             _tintStrength != tintStrength || (tintStrength > 0 && !_tintColor.Equals(tintColor)) ||
+            _keyStrength != keyStrength || (keyStrength > 0 && (_keyRange != keyRange || !_keyColor.Equals(keyColor))) ||
             (_hidden && !hidden);
         bool restart = _target != hwnd || _session is null;
         if (restart) Stop();
@@ -78,6 +83,9 @@ public sealed class EffectSession : IDisposable
         _topmost = topmost;
         _tintStrength = tintStrength;
         _tintColor = tintColor;
+        _keyColor = keyColor;
+        _keyRange = keyRange;
+        _keyStrength = keyStrength;
         if (restart) Start(hwnd);
         else if (changed)
         {
@@ -179,6 +187,16 @@ public sealed class EffectSession : IDisposable
         if (_device is null || _overlay is null || _sourceCopy is null) return;
         if (_hidden || _opacity == 0 || !EffectNative.IsWindowVisible(_target) || EffectNative.IsIconic(_target)) { _overlay.Hide(); return; }
         ICanvasImage image = _sourceCopy;
+        // 抠色以捕获的原图为准，后续的反色、灰度和染色不会改变哪些像素被选中。
+        using var keyed = _keyStrength > 0 ? CreateColorKeyEffect(image, _keyColor, _keyRange) : null;
+        // 部分强度对预乘后的 RGBA 做线性插值，未命中部分的颜色和透明度保持原值。
+        using var partial = _keyStrength is > 0 and < 100 ? new ArithmeticCompositeEffect
+        {
+            Source1 = image, Source2 = keyed, MultiplyAmount = 0,
+            Source1Amount = 1 - _keyStrength / 100f, Source2Amount = _keyStrength / 100f
+        } : null;
+        if (partial is not null) image = partial;
+        else if (keyed is not null) image = keyed;
         using var invert = _invert ? new InvertEffect { Source = image } : null;
         if (invert is not null) image = invert;
         using var grayscale = _grayscale ? new GrayscaleEffect { Source = image } : null;
@@ -213,6 +231,14 @@ public sealed class EffectSession : IDisposable
             }
         };
     }
+
+    internal static ChromaKeyEffect CreateColorKeyEffect(ICanvasImage source, Color color, int range) => new()
+    {
+        Source = source,
+        Color = color,
+        // 零范围只留极小浮点容差，避免同一 8 位颜色在 GPU 运算中出现舍入差。
+        Tolerance = Math.Max(0.0001f, range / 100f)
+    };
 
     private void TrackTarget()
     {

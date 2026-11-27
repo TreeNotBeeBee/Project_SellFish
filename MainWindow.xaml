@@ -167,30 +167,57 @@
                 <Button x:Name="OpacityDownShortcutClear" Grid.Row="3" Grid.Column="2" Style="{StaticResource ClearShortcutButton}"
                         AutomationProperties.AutomationId="OpacityDownShortcutClear" AutomationProperties.Name="清除减少不透明度快捷键"/>
         </Grid>
-        <Grid x:Name="AdvancedPage" Grid.Row="1" Visibility="Collapsed" RowSpacing="6">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-            </Grid.RowDefinitions>
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="PickControl" Content="选择控件" Click="PickNativeControl"
-                        AutomationProperties.AutomationId="PickControl"/>
-                <Button x:Name="PickRegion" Content="选择输出区域" Click="PickOutputRegion"
-                        AutomationProperties.AutomationId="PickRegion"/>
+        <StackPanel x:Name="AdvancedPage" Grid.Row="1" Visibility="Collapsed" Spacing="10">
+            <StackPanel Orientation="Horizontal" Spacing="9">
+                <CheckBox x:Name="KeyEnabled" Content="启用颜色过滤" Style="{StaticResource PanelCheckBox}"
+                          AutomationProperties.AutomationId="KeyEnabled" Click="ToggleColorKey"/>
+                <Button x:Name="KeyColorButton" Width="32" Height="32" MinWidth="0" Padding="0"
+                        AutomationProperties.AutomationId="KeyColorButton" ToolTipService.ToolTip="选择要过滤的颜色">
+                    <Button.Flyout>
+                        <Flyout ShouldConstrainToRootBounds="False">
+                            <ColorPicker x:Name="KeyColorPicker" IsAlphaEnabled="False" IsMoreButtonVisible="False"
+                                         IsColorPreviewVisible="False" AutomationProperties.AutomationId="KeyColorPicker"
+                                         AutomationProperties.Name="要过滤的颜色"/>
+                        </Flyout>
+                    </Button.Flyout>
+                    <Border Width="22" Height="22" CornerRadius="2" BorderThickness="1"
+                            BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}">
+                        <Border.Background><SolidColorBrush x:Name="KeySwatchBrush"/></Border.Background>
+                    </Border>
+                </Button>
+                <TextBlock x:Name="KeyHex" MinWidth="66" Style="{StaticResource FieldLabel}" FontFamily="Consolas"
+                           AutomationProperties.AutomationId="KeyHex"/>
+                <Button x:Name="KeyEyedropper" Click="PickScreenColor" AutomationProperties.AutomationId="KeyEyedropper"
+                        AutomationProperties.Name="屏幕取色" ToolTipService.ToolTip="单击屏幕上要吸取的颜色，按 Esc 取消">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon Glyph="&#xEF3C;" FontSize="14"/>
+                        <TextBlock Text="屏幕取色"/>
+                    </StackPanel>
+                </Button>
             </StackPanel>
-            <TextBlock x:Name="AdvancedHint" Grid.Row="1" TextWrapping="Wrap"
-                       Style="{ThemeResource CaptionTextBlockStyle}" AutomationProperties.AutomationId="AdvancedHint"
+            <StackPanel Orientation="Horizontal" Spacing="9">
+                <TextBlock Text="颜色范围" Style="{StaticResource FieldLabel}"/>
+                <TextBox x:Name="KeyRangeInput" Width="64" Text="0" MaxLength="3" InputScope="Number"
+                         HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="6,4"
+                         IsSpellCheckEnabled="False" IsTextPredictionEnabled="False" AutomationProperties.AutomationId="KeyRangeInput"
+                         AutomationProperties.Name="颜色范围百分比" ToolTipService.ToolTip="0 只匹配所选颜色，调大可包含近似颜色"/>
+                <TextBlock Text="%" Style="{StaticResource FieldLabel}"/>
+                <TextBlock Text="过滤强度" Margin="14,0,0,0" Style="{StaticResource FieldLabel}"/>
+                <TextBox x:Name="KeyStrengthInput" Width="64" Text="100" MaxLength="3" InputScope="Number"
+                         HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="6,4"
+                         IsSpellCheckEnabled="False" IsTextPredictionEnabled="False" AutomationProperties.AutomationId="KeyStrengthInput"
+                         AutomationProperties.Name="过滤强度百分比" ToolTipService.ToolTip="100 使匹配的颜色完全透明，0 保留原图"/>
+                <TextBlock Text="%" Style="{StaticResource FieldLabel}"/>
+            </StackPanel>
+            <TextBlock x:Name="AdvancedHint" TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}"
+                       AutomationProperties.AutomationId="AdvancedHint" AutomationProperties.LiveSetting="Polite"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="DetachedRows" Spacing="2" AutomationProperties.Name="已分离的组件"/>
-            </ScrollViewer>
-        </Grid>
+        </StackPanel>
         <Grid x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed">
             <StackPanel x:Name="SettingsOverview" Spacing="10">
                 <CheckBox x:Name="ToolPin" Content="sell fish 始终置顶" Click="SetToolPin"
                           Style="{StaticResource PanelCheckBox}" AutomationProperties.AutomationId="ToolPin"
-                          ToolTipService.ToolTip="同时应用于主面板、工具栏和所有分离浮窗"/>
+                          ToolTipService.ToolTip="同时应用于主面板和迷你工具栏"/>
                 <StackPanel Orientation="Horizontal" Spacing="8">
                     <TextBlock Text="主题" Style="{StaticResource FieldLabel}"/>
                     <ComboBox x:Name="ThemeBox" Width="70" AutomationProperties.AutomationId="ThemeBox" AutomationProperties.Name="主题">

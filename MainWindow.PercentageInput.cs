@@ -7,8 +7,7 @@ namespace WindowPilot;
 
 public sealed partial class MainWindow
 {
-    // 两个百分比输入框各自延迟提交。更新其中一个或使用透明度快捷键时，
-    // 另一个尚在编辑的数字和定时器应保持不变。
+    // 每个百分比输入框独立延迟提交，使用透明度快捷键时也能保留其他框的待提交输入。
     private sealed class PercentageInput
     {
         private readonly MainWindow _owner;

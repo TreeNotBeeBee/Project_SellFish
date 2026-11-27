@@ -88,7 +88,7 @@ def visible_ids(panel):
 def tab(panel, name):
     field(panel, name).iface_selection_item.Select()
     # SelectionItem.Select can return before WinUI rebuilds the page's automation tree.
-    marker = {"BasicTab": "TargetBox", "AdvancedTab": "PickControl",
+    marker = {"BasicTab": "TargetBox", "AdvancedTab": "KeyEnabled",
               "ShortcutsTab": "HideShortcutBox", "SettingsTab": "MiniStyleBox"}[name]
     field(panel, marker)
 
@@ -168,7 +168,8 @@ def check_pages(panel, profile):
     assert max(box.bottom for box in checks) <= opacity.top
     tab(panel, "AdvancedTab")
     ids = visible_ids(panel)
-    assert {"PickControl", "PickRegion"} <= ids and ids.isdisjoint(recorders | settings), ids
+    assert {"KeyEnabled", "KeyColorButton", "KeyEyedropper", "KeyRangeInput", "KeyStrengthInput"} <= ids
+    assert ids.isdisjoint(recorders | settings | {"PickControl", "PickRegion", "DetachedRows"}), ids
     tab(panel, "ShortcutsTab")
     ids = visible_ids(panel)
     assert recorders <= ids and ids.isdisjoint(basic | settings)

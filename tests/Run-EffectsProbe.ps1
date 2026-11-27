@@ -37,4 +37,4 @@ if (-not $probeResult.success) {
     Get-Content -LiteralPath $probeResultPath -Raw | Write-Output
     throw 'EffectsProbe reported a failure.'
 }
-Write-Output 'PASS: raw capture, inversion, grayscale+alpha, tint strengths and colors, premultiplied alpha, input hit testing, normal/topmost occlusion, resize, static repaint, minimized/hidden/zero presentation.'
+Write-Output 'PASS: raw capture, inversion, grayscale+alpha, tint strengths and colors, selective color removal over live backgrounds, premultiplied alpha, input hit testing, normal/topmost occlusion, resize, static repaint, minimized/hidden/zero presentation.'
