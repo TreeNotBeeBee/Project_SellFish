@@ -231,5 +231,7 @@
                 <FontIcon FontSize="10" Glyph="&#xE8BB;"/>
             </Button>
         </StackPanel>
+        <Border x:Name="PanelOutline" BorderThickness="1" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}"
+                IsHitTestVisible="False"/>
     </Grid>
 </Window>

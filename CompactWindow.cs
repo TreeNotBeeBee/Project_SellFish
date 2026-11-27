@@ -19,6 +19,7 @@ internal sealed class CompactWindow : IDisposable
     private const int ContentHeight = 264;
     private const int FeedbackHeight = 40;
     private const nuint WorkAreaSubclass = 0x5741;
+    private const uint PositionOnlyFlags = 0x0004 | 0x0010 | 0x0200; // NOZORDER | NOACTIVATE | NOOWNERZORDER
 
     private readonly Window _window;
     private readonly Grid _root;
@@ -27,6 +28,7 @@ internal sealed class CompactWindow : IDisposable
     private readonly Grid _fullPanel;
     private readonly StackPanel _miniActions;
     private readonly StackPanel _caption;
+    private readonly Border _outline;
     private readonly Button _collapse;
     private readonly Button _expand;
     private readonly Button _exit;
@@ -63,13 +65,14 @@ internal sealed class CompactWindow : IDisposable
         _fullPanel = (Grid)root.FindName("PanelContent");
         _miniActions = (StackPanel)root.FindName("MiniActions");
         _caption = (StackPanel)root.FindName("CaptionButtons");
+        _outline = (Border)root.FindName("PanelOutline");
         _collapse = (Button)root.FindName("CollapseButton");
         _expand = (Button)root.FindName("ExpandButton");
         _exit = (Button)root.FindName("ExitButton");
         _toolbar = new MiniToolbar(actions);
         _toolbarSettings = settings;
         _imeBar = new ImeToolbar { Visibility = Visibility.Collapsed };
-        root.Children.Add(_imeBar);
+        root.Children.Insert(root.Children.IndexOf(_outline), _imeBar);
         _toolbarSettings.Changed += OnToolbarSettingsChanged;
         // A moving window can stay under the same local pointer coordinate. Sampling
         // screen coordinates while held also covers gaps in XAML PointerMoved events.
@@ -80,7 +83,8 @@ internal sealed class CompactWindow : IDisposable
 
         if (window.AppWindow.Presenter is OverlappedPresenter presenter)
         {
-            presenter.SetBorderAndTitleBar(true, false);
+            // 所有样式共用同一个无边框 HWND，切换工具栏时只改变 XAML，不重建原生焦点区域。
+            presenter.SetBorderAndTitleBar(false, false);
             presenter.IsResizable = false;
             presenter.IsMaximizable = false;
             presenter.IsMinimizable = false;
@@ -224,11 +228,7 @@ internal sealed class CompactWindow : IDisposable
         bool icons = _mini && _toolbarSettings.UsesIcons;
         bool classic = _mini && !icons;
         bool inputMethod = icons && _toolbarSettings.Style == MiniToolbarStyle.InputMethod;
-        // Windows 会给带原生边框的窗口保留最小高度。输入法条使用无边框窗口，才能贴合 22 DIP 高的图标。
-        var presenter = _window.AppWindow.Presenter as OverlappedPresenter;
-        bool needsBorder = !inputMethod;
-        bool changingBorder = presenter != null && presenter.HasBorder != needsBorder;
-        if (changingBorder) presenter!.SetBorderAndTitleBar(needsBorder, false);
+        _outline.Visibility = inputMethod ? Visibility.Collapsed : Visibility.Visible;
         _fullPanel.Visibility = _collapse.Visibility = _mini ? Visibility.Collapsed : Visibility.Visible;
         _miniActions.Visibility = _expand.Visibility = classic ? Visibility.Visible : Visibility.Collapsed;
         _caption.Visibility = icons ? Visibility.Collapsed : Visibility.Visible;
@@ -245,8 +245,6 @@ internal sealed class CompactWindow : IDisposable
         else _toolbar.Clear();
         _switchMode.Text = _mini ? "展开主面板" : "收起为工具栏";
         SizeWindow();
-        // Windows 10 在后续消息中更新边框尺寸，用最终的非客户区尺寸再核对一次客户区。
-        if (changingBorder) QueueSizeWindow();
     }
 
     // Follow the system close path so AppWindow.Closing can cancel a failed target restore.
@@ -309,14 +307,14 @@ internal sealed class CompactWindow : IDisposable
             !(_lastResize is { } last && last.Request.Equals(size) && last.Actual.Equals(current)))
         {
             var proposed = WorkAreaBounds.Clamp(destination, size, area);
-            appWindow.MoveAndResize(new RectInt32(proposed.X, proposed.Y, size.Width, size.Height));
+            if (!SetWindowPos(_hwnd, 0, proposed.X, proposed.Y, size.Width, size.Height, PositionOnlyFlags)) return;
             // Windows 的最小边框高度可能高于请求值。用落地外框约束位置，并记住结果以免重复缩放。
             current = appWindow.Size;
             _lastResize = (size, current);
         }
         var point = WorkAreaBounds.Clamp(destination, current, area);
         if (!appWindow.Position.Equals(point))
-            appWindow.Move(point);
+            SetWindowPos(_hwnd, 0, point.X, point.Y, 0, 0, PositionOnlyFlags | 0x0001 /* NOSIZE */);
     }
 
     private static string ThemePath => Path.Combine(AppProfile.DirectoryPath, "theme.txt");
