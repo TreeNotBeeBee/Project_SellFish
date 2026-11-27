@@ -35,63 +35,110 @@ internal static class NativeControlPicker
 
     internal static async Task<(int X, int Y)> PickPointAsync(WindowTarget target, CancellationToken token)
     {
-        var queue = DispatcherQueue.GetForCurrentThread() ?? throw new InvalidOperationException("请从控制面板选择控件。");
+        var click = await PickClickAsync(target, token);
+        return (click.Point.X, click.Point.Y);
+    }
+
+    internal static async Task<WindowTarget> PickWindowAsync(CancellationToken token)
+    {
+        var click = await PickClickAsync(null, token);
+        token.ThrowIfCancellationRequested();
+        if (click.ProcessId == Environment.ProcessId)
+            throw new InvalidOperationException("不能绑定 sell fish 自身的窗口，请重新点选其他应用。");
+        var target = WindowService.GetSelectableTarget(click.Root);
+        if (target == null || target.ProcessId != click.ProcessId || target.ThreadId != click.ThreadId)
+            throw new InvalidOperationException("请选择其他应用的普通窗口。桌面、任务栏和工具窗口不能绑定。");
+        return target;
+    }
+
+    private static async Task<PickedClick> PickClickAsync(WindowTarget? target, CancellationToken token)
+    {
+        var queue = DispatcherQueue.GetForCurrentThread() ?? throw new InvalidOperationException("请从控制面板开始点选。");
         // 面板和多个输入浮窗可同时请求点选，同一对鼠标按下/松开只属于一个请求。
         if (Interlocked.CompareExchange(ref _picking, 1, 0) != 0)
             throw new InvalidOperationException("已有点选正在进行。请先完成点选，或按 Esc 取消。");
-        try { return await CapturePointAsync(queue, target, token); }
+        try { return await CaptureClickAsync(queue, target, token); }
         finally { Interlocked.Exchange(ref _picking, 0); }
     }
 
-    private static async Task<(int X, int Y)> CapturePointAsync(DispatcherQueue queue, WindowTarget target, CancellationToken token)
+    private static async Task<PickedClick> CaptureClickAsync(DispatcherQueue queue, WindowTarget? target, CancellationToken token)
     {
-        var point = new TaskCompletionSource<PickPoint>(TaskCreationOptions.RunContinuationsAsynchronously);
-        PickPoint? pressed = null;
-        nint hook = 0;
-        MouseProc capture = (code, message, data) =>
+        var completion = new TaskCompletionSource<PickedClick>(TaskCreationOptions.RunContinuationsAsynchronously);
+        PickedClick? pressed = null;
+        bool escapeHeld = false, cancelling = false;
+        HookProc mouse = (code, message, data) =>
         {
-            if (code >= 0 && message == 0x0201) // WM_LBUTTONDOWN
+            if (code >= 0 && message == 0x0201 && !completion.Task.IsCompleted) // WM_LBUTTONDOWN
             {
                 var cursor = Marshal.PtrToStructure<PickPoint>(data);
-                if (GetAncestor(WindowFromPoint(cursor), 2) == target.Handle)
+                var root = GetAncestor(WindowFromPoint(cursor), 2); // GA_ROOT 保留独立对话框，子控件向上归到窗口。
+                if (target == null || root == target.Handle)
                 {
-                    pressed = cursor;
+                    // 回调只记下命中窗口和坐标，进程查询、资格核验放到松开后执行。
+                    var thread = GetWindowThreadProcessId(root, out var pid);
+                    pressed = new(cursor, root, thread, pid);
                     return 1;
                 }
-                point.TrySetException(new InvalidOperationException("请在当前绑定的窗口中选择控件。"));
+                completion.TrySetException(new InvalidOperationException("请在当前绑定的窗口中选择控件。"));
             }
-            if (code >= 0 && message == 0x0202 && pressed.HasValue)
+            if (code >= 0 && message == 0x0202 && pressed is { } click) // WM_LBUTTONUP
             {
-                point.TrySetResult(pressed.Value);
+                pressed = null;
+                if (!cancelling) completion.TrySetResult(click);
+                else if (!escapeHeld) completion.TrySetCanceled();
                 return 1;
+            }
+            return CallNextHookEx(0, code, message, data);
+        };
+
+        HookProc keyboard = (code, message, data) =>
+        {
+            if (code >= 0 && Marshal.ReadInt32(data) == 0x1B && !completion.Task.IsCompleted) // VK_ESCAPE
+            {
+                if (message is 0x0100 or 0x0104) // KEYDOWN / SYSKEYDOWN
+                {
+                    escapeHeld = cancelling = true;
+                    return 1;
+                }
+                if (escapeHeld && message is (0x0101 or 0x0105)) // KEYUP / SYSKEYUP
+                {
+                    escapeHeld = false;
+                    // 中途取消时，也要吃掉之前已拦截的鼠标松开，避免影响实际窗口。
+                    if (pressed == null) completion.TrySetCanceled();
+                    return 1;
+                }
             }
             return CallNextHookEx(0, code, message, data);
         };
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
-        using var registration = timeout.Token.Register(() => point.TrySetCanceled(timeout.Token));
+        using var registration = timeout.Token.Register(() => completion.TrySetCanceled(timeout.Token));
         var timer = queue.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(30);
+        timer.Interval = TimeSpan.FromMilliseconds(100);
         timer.Tick += (_, _) =>
         {
-            if (GetAsyncKeyState(0x1B) < 0 || !IsWindow(target.Handle)) point.TrySetCanceled();
+            if (target != null && !IsWindow(target.Handle)) completion.TrySetCanceled();
         };
-        PickPoint picked;
+        nint mouseHook = 0, keyboardHook = 0;
         try
         {
             token.ThrowIfCancellationRequested();
-            hook = SetWindowsHookExW(14, capture, GetModuleHandleW(null), 0);
-            if (hook == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法启动控件点选。");
-            timer.Start();
-            picked = await point.Task;
+            var module = GetModuleHandleW(null);
+            mouseHook = SetWindowsHookExW(14, mouse, module, 0); // WH_MOUSE_LL
+            if (mouseHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法启动鼠标点选。");
+            keyboardHook = SetWindowsHookExW(13, keyboard, module, 0); // WH_KEYBOARD_LL
+            if (keyboardHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法启用 Esc 取消点选。");
+            if (target != null) timer.Start();
+            return await completion.Task;
         }
         finally
         {
             timer.Stop();
-            if (hook != 0) UnhookWindowsHookEx(hook);
-            GC.KeepAlive(capture);
+            if (keyboardHook != 0) UnhookWindowsHookEx(keyboardHook);
+            if (mouseHook != 0) UnhookWindowsHookEx(mouseHook);
+            GC.KeepAlive(keyboard);
+            GC.KeepAlive(mouse);
         }
-        return (picked.X, picked.Y);
     }
 
     internal static IUIAutomationElement ElementAt(IUIAutomation api, WindowTarget target, int x, int y)
@@ -234,12 +281,12 @@ internal static class NativeControlPicker
     }
 
     [StructLayout(LayoutKind.Sequential)] private readonly record struct PickPoint(int X, int Y);
-    private delegate nint MouseProc(int code, nuint message, nint data);
-    [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowsHookExW(int id, MouseProc proc, nint module, uint thread);
+    private readonly record struct PickedClick(PickPoint Point, nint Root, uint ThreadId, uint ProcessId);
+    private delegate nint HookProc(int code, nuint message, nint data);
+    [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowsHookExW(int id, HookProc proc, nint module, uint thread);
     [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(nint hook);
     [DllImport("user32.dll")] private static extern nint CallNextHookEx(nint hook, int code, nuint msg, nint data);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern nint GetModuleHandleW(string? name);
-    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll")] private static extern bool IsWindow(nint hwnd);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
     [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);

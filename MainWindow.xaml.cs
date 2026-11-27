@@ -22,8 +22,8 @@ public sealed partial class MainWindow : Window
     private readonly CompactWindow _panel;
     private readonly NotificationAreaIcon? _tray;
     private ShortcutEditor? _shortcuts;
+    private CancellationTokenSource? _windowPicking;
     private int _requestedOpacity = 100;
-    private int _previousOpacity = 100;
     private bool _invert;
     private bool _gray;
     private bool _updating;
@@ -46,6 +46,10 @@ public sealed partial class MainWindow : Window
         ];
         var toolbarSettings = new MiniToolbarSettings(AppProfile.DirectoryPath, actions.Select(action => action.Id));
         _panel = new CompactWindow(this, Root, ThemeBox, StatusText, actions, toolbarSettings);
+        PanelContent.RegisterPropertyChangedCallback(UIElement.VisibilityProperty, (_, _) =>
+        {
+            if (PanelContent.Visibility == Visibility.Collapsed) _windowPicking?.Cancel();
+        });
         InitializeToolbarSettings(toolbarSettings, actions);
         InitializeDetachedControls();
         _typing = DispatcherQueue.CreateTimer();
@@ -82,6 +86,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _ready = false;
+            _windowPicking?.Cancel();
             _tray?.Dispose();
             EndDetachedSession();
             _refresh.Stop();
@@ -145,7 +150,7 @@ public sealed partial class MainWindow : Window
 
     private void RefreshList()
     {
-        if (TargetBox.IsDropDownOpen || _windows.Target != null) return;
+        if (TargetBox.IsDropDownOpen || _windows.Target != null || _windowPicking != null) return;
         var choices = _windows.Enumerate()
             .OrderBy(w => w.Display, StringComparer.CurrentCultureIgnoreCase)
             .Select(w => new TargetChoice(w.Display, w)).ToList();
@@ -169,22 +174,54 @@ public sealed partial class MainWindow : Window
 
     private void SelectTarget(object sender, SelectionChangedEventArgs e)
     {
-        if (!_ready || _updating || TargetBox.SelectedItem is not TargetChoice choice) return;
+        if (!_ready || _updating || _windowPicking != null || TargetBox.SelectedItem is not TargetChoice choice) return;
         Run(() =>
         {
-            if (choice.Target == null) { Release(); return; }
-            if (_windows.Target != null) return;
-            try { _windows.Bind(choice.Target); }
-            catch { TargetBox.SelectedIndex = -1; throw; }
-            _requestedOpacity = _windows.Opacity ?? 100;
-            _previousOpacity = _requestedOpacity > 0 ? _requestedOpacity : 100;
-            _invert = _gray = false;
-            _retryGuardAt = 0;
-            ShowBoundChoice(choice.Target);
-            ShowOpacityNumber();
-            SyncControls();
-            Status("");
+            if (choice.Target == null) Release();
+            else BindTarget(choice.Target);
         });
+    }
+
+    private async void PickWindow(object sender, RoutedEventArgs args)
+    {
+        if (!_ready || _windowPicking != null || _windows.Target != null) return;
+        using var cancellation = new CancellationTokenSource();
+        _windowPicking = cancellation;
+        const string hint = "请单击要绑定的窗口，按 Esc 取消。";
+        try
+        {
+            TargetBox.IsDropDownOpen = false;
+            SyncControls();
+            Status(hint);
+            var target = await NativeControlPicker.PickWindowAsync(cancellation.Token);
+            // 点击已捕获时仍可能切页或关闭面板，过期的结果不能建立新绑定。
+            if (_ready && !cancellation.IsCancellationRequested) BindTarget(target);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (_ready && !cancellation.IsCancellationRequested) Status(ex.Message); }
+        finally
+        {
+            _windowPicking = null;
+            if (_ready)
+            {
+                if (StatusText.Text == hint) Status("");
+                Run(SyncControls);
+            }
+        }
+    }
+
+    private void BindTarget(WindowTarget target)
+    {
+        if (_windows.Target != null) return;
+        try { _windows.Bind(target); }
+        catch { TargetBox.SelectedIndex = -1; throw; }
+        _requestedOpacity = _windows.Opacity ?? 100;
+        _invert = _gray = false;
+        _retryGuardAt = 0;
+        ShowBoundChoice(target);
+        ShowOpacityNumber();
+        SyncControls();
+        Status("");
     }
 
     private void SyncControls()
@@ -193,16 +230,17 @@ public sealed partial class MainWindow : Window
         try
         {
             bool bound = _windows.Target != null;
+            TargetBox.IsEnabled = _windowPicking == null;
+            PickWindowButton.IsEnabled = !bound && _windowPicking == null;
             HiddenBox.IsEnabled = TopmostBox.IsEnabled = bound;
             HiddenBox.IsChecked = bound && _windows.IsHidden;
             TopmostBox.IsChecked = bound && _windows.IsTopmost;
             ClickThroughBox.IsEnabled = bound && _windows.CanClickThrough;
             ClickThroughBox.IsChecked = bound && _windows.IsClickThrough;
             bool supported = bound && _windows.Opacity.HasValue;
-            OpacityInput.IsEnabled = ZeroButton.IsEnabled = InvertBox.IsEnabled = GrayBox.IsEnabled = supported;
+            OpacityInput.IsEnabled = InvertBox.IsEnabled = GrayBox.IsEnabled = supported;
             InvertBox.IsChecked = _invert;
             GrayBox.IsChecked = _gray;
-            ZeroButton.Content = _requestedOpacity == 0 ? $"{_previousOpacity}%" : "0%";
             RefreshAdvancedControls();
         }
         finally { _updating = false; }
@@ -223,7 +261,7 @@ public sealed partial class MainWindow : Window
         _effects.Stop();
         _windows.Release();
         _invert = _gray = false;
-        _requestedOpacity = _previousOpacity = 100;
+        _requestedOpacity = 100;
         ShowOpacityNumber();
         SyncControls();
         // SelectionChanged may be running inside the open binding list.
@@ -325,17 +363,9 @@ public sealed partial class MainWindow : Window
         ShowOpacityNumber();
     }
 
-    private void ToggleZero(object sender, RoutedEventArgs e) => Run(() =>
-    {
-        _typing.Stop();
-        SetRequestedOpacity(_requestedOpacity == 0 ? _previousOpacity : 0);
-        ShowOpacityNumber();
-    });
-
     private void SetRequestedOpacity(int value)
     {
         if (_windows.Target == null) return;
-        if (value == 0 && _requestedOpacity > 0) _previousOpacity = _requestedOpacity;
         _requestedOpacity = value;
         ApplyAppearance();
         Status("");

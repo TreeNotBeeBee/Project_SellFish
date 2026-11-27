@@ -138,13 +138,22 @@ def check_pages(panel, profile):
     tabs = ["BasicTab", "AdvancedTab", "ShortcutsTab", "SettingsTab"]
     assert sorted(tabs, key=lambda key: field(panel, key).rectangle().left) == tabs
     assert [field(panel, key).window_text() for key in tabs] == ["基础", "进阶", "快捷键", "设置"]
-    basic = {"TargetBox", "TopmostBox", "OpacityInput", "ZeroButton", "InvertBox", "GrayBox", "HiddenBox", "ClickThroughBox"}
+    effects = ["TopmostBox", "HiddenBox", "ClickThroughBox", "InvertBox", "GrayBox"]
+    basic = {"TargetBox", "PickWindowButton", "OpacityInput", *effects}
     recorders = {stem + suffix for stem in ("Hide", "Through", "OpacityUp", "OpacityDown")
                  for suffix in ("ShortcutBox", "ShortcutClear")}
     settings = {"ThemeBox", "ToolPin", "MiniStyleBox", "EditToolbarActions"}
     tab(panel, "BasicTab")
     ids = visible_ids(panel)
-    assert basic <= ids and ids.isdisjoint(recorders | settings)
+    assert basic <= ids and ids.isdisjoint(recorders | settings | {"ZeroButton"})
+    selector, picker = [field(panel, key).rectangle() for key in ("TargetBox", "PickWindowButton")]
+    checks = [field(panel, key).rectangle() for key in effects]
+    opacity = field(panel, "OpacityInput").rectangle()
+    assert selector.left < selector.right <= picker.left and selector.top <= picker.mid_point().y <= selector.bottom
+    assert max(selector.bottom, picker.bottom) <= min(box.top for box in checks)
+    assert max(box.top for box in checks) < min(box.bottom for box in checks)
+    assert all(first.right <= second.left for first, second in zip(checks, checks[1:]))
+    assert max(box.bottom for box in checks) <= opacity.top
     tab(panel, "AdvancedTab")
     ids = visible_ids(panel)
     assert {"PickControl", "PickRegion"} <= ids and ids.isdisjoint(recorders | settings), ids

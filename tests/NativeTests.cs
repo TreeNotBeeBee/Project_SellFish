@@ -35,6 +35,7 @@ internal static class NativeTests
             ExpectError(() => service.Bind(a with { ProcessId = uint.MaxValue }), "invalid identity rejected");
             service.Bind(a);
             Check(service.Target?.Handle == hwndA && service.IsAlive(), "one target bound");
+            TestSelfBinding(service, hwndA);
             var originalStyle = Native.GetWindowLongPtr(hwndA, -20).ToInt64();
             var foreground = Native.GetForegroundWindow();
             service.SetTopmost(true);
@@ -189,6 +190,26 @@ internal static class NativeTests
         if (!value) throw new InvalidOperationException("FAILED: " + name);
         Passed.Add(name); Console.WriteLine("PASS " + name);
     }
+    private static void TestSelfBinding(WindowService service, nint originalTarget)
+    {
+        const string title = "sell fish self-binding test";
+        // Use a valid, visible top-level HWND and its real identity to exercise Bind directly.
+        var own = Native.CreateWindowEx(0x08000000, "Static", title, 0x90000000,
+            0, 0, 4, 4, 0, 0, Native.GetModuleHandle(null), 0);
+        if (own == 0) throw new InvalidOperationException("Cannot create self-binding test window.");
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            var thread = Native.GetWindowThreadProcessId(own, out var pid);
+            var identity = new WindowTarget(own, pid, thread, "Static", title, process.ProcessName,
+                process.StartTime.ToUniversalTime().Ticks);
+            Check(service.Enumerate().All(target => target.Handle != own), "own window excluded from dropdown");
+            ExpectError(() => service.Bind(identity), "direct binding rejects own valid HWND");
+            Check(service.IsAlive() && service.Target?.Handle == originalTarget, "rejected self-binding preserves original target");
+        }
+        finally { Native.DestroyWindow(own); }
+    }
+
     private static void ExpectError(Action operation, string name)
     {
         try { operation(); } catch (InvalidOperationException) { Check(true, name); return; }
@@ -476,6 +497,7 @@ internal static class NativeTests
         [DllImport("user32.dll")] internal static extern bool ShowWindowAsync(nint hwnd, int command);
         [DllImport("user32.dll")] internal static extern bool UpdateWindow(nint hwnd);
         [DllImport("user32.dll")] internal static extern bool DestroyWindow(nint hwnd);
+        [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
         [DllImport("user32.dll")] internal static extern void PostQuitMessage(int code);
         [DllImport("user32.dll")] internal static extern bool PostMessage(nint hwnd, uint message, nint wParam, nint lParam);
         [DllImport("user32.dll")] internal static extern nuint SetTimer(nint hwnd, nuint id, uint timeout, nint callback);

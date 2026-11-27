@@ -68,7 +68,7 @@ public sealed class WindowService : IDisposable
     public List<WindowTarget> Enumerate()
     {
         var windows = new List<WindowTarget>();
-        var cache = new Dictionary<uint, (string Name, long Started)>();
+        var cache = new Dictionary<uint, WindowProcess>();
         Native.EnumWindows((hwnd, _) =>
         {
             try
@@ -85,13 +85,20 @@ public sealed class WindowService : IDisposable
             .ThenBy(x => x.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
-    public WindowTarget? GetForegroundTarget() => ReadTarget(Native.GetForegroundWindow(), null);
+    internal static WindowTarget? GetSelectableTarget(nint hwnd) => ReadTarget(hwnd, null);
+
+    public WindowTarget? GetForegroundTarget() => GetSelectableTarget(Native.GetForegroundWindow());
 
     public void Bind(WindowTarget target)
     {
-        if (_snapshot != null && SameIdentity(_snapshot.Target, target) && IsAlive()) return;
-        if (!IdentityAlive(target)) throw new InvalidOperationException("目标窗口已关闭或被替换，请刷新列表。");
-        if (target.ProcessId == Environment.ProcessId) throw new InvalidOperationException("不能绑定工具自身的窗口。");
+        if (_snapshot != null && SameIdentity(target, _snapshot.Target) && IsAlive()) return;
+        // 列表可能已经过时；点选与直接调用也必须按实际 HWND 重新核验，再释放旧目标。
+        Native.GetWindowThreadProcessId(target.Handle, out var actualPid);
+        if (actualPid == Environment.ProcessId) throw new InvalidOperationException("不能绑定 sell fish 自身的窗口。");
+        var current = GetSelectableTarget(target.Handle);
+        if (current == null || !SameIdentity(target, current))
+            throw new InvalidOperationException("目标窗口已关闭、被替换或不支持绑定，请重新选择。");
+        target = current;
         Release(); // Restore the old binding before accepting a new one.
         var style = ReadStyle(target.Handle);
         var placement = ReadPlacement(target.Handle);
@@ -407,6 +414,8 @@ public sealed class WindowService : IDisposable
         try { snapshot = JsonSerializer.Deserialize<Snapshot>(File.ReadAllText(_journalPath), JsonOptions); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         { throw new InvalidOperationException("无法读取上次的窗口恢复记录：" + ex.Message, ex); }
+        // 旧版已经修改过的外部窗口可能已隐藏或现被禁止新绑定；仍凭原 GUID 恢复它。
+        // SnapshotAlive 根据真实 PID 拒绝本进程的任何窗口。
         if (snapshot?.Identity != null && snapshot.Marker.StartsWith("WindowPilot.Managed.", StringComparison.Ordinal)
             && SnapshotAlive(snapshot)) _snapshot = snapshot;
         Release();
@@ -504,7 +513,8 @@ public sealed class WindowService : IDisposable
     {
         if (!Native.IsWindow(target.Handle)) return false;
         var thread = Native.GetWindowThreadProcessId(target.Handle, out var pid);
-        if (thread != target.ThreadId || pid != target.ProcessId || ReadClass(target.Handle) != target.ClassName) return false;
+        if (pid == Environment.ProcessId || thread != target.ThreadId || pid != target.ProcessId ||
+            ReadClass(target.Handle) != target.ClassName) return false;
         if (target.ProcessStartTicks != 0)
         {
             try
@@ -517,12 +527,15 @@ public sealed class WindowService : IDisposable
         return true;
     }
 
-    private static bool SameIdentity(WindowTarget a, WindowTarget b) => a.Handle == b.Handle && a.ProcessId == b.ProcessId
-        && a.ThreadId == b.ThreadId && a.ClassName == b.ClassName && a.ProcessStartTicks == b.ProcessStartTicks;
+    private static bool SameIdentity(WindowTarget requested, WindowTarget actual) =>
+        requested.Handle == actual.Handle && requested.ProcessId == actual.ProcessId &&
+        requested.ThreadId == actual.ThreadId && requested.ClassName == actual.ClassName &&
+        (requested.ProcessStartTicks == 0 || requested.ProcessStartTicks == actual.ProcessStartTicks);
 
-    private static WindowTarget? ReadTarget(nint hwnd, Dictionary<uint, (string Name, long Started)>? cache)
+    private static WindowTarget? ReadTarget(nint hwnd, Dictionary<uint, WindowProcess>? cache)
     {
-        if (hwnd == 0 || !Native.IsWindowVisible(hwnd) || hwnd == Native.GetShellWindow()) return null;
+        if (hwnd == 0 || Native.GetAncestor(hwnd, 2) != hwnd || !Native.IsWindowVisible(hwnd) ||
+            hwnd == Native.GetShellWindow()) return null;
         var thread = Native.GetWindowThreadProcessId(hwnd, out var pid);
         if (pid == 0 || pid == Environment.ProcessId || thread == 0) return null;
         var className = ReadClass(hwnd);
@@ -533,21 +546,38 @@ public sealed class WindowService : IDisposable
         Native.GetWindowText(hwnd, buffer, buffer.Capacity);
         var title = buffer.ToString().Trim();
         if (title.Length == 0) return null;
-        (string Name, long Started) info;
+        WindowProcess info;
         if (cache == null || !cache.TryGetValue(pid, out info))
         {
-            info = ($"进程 {pid}", 0);
-            try
-            {
-                using var process = Process.GetProcessById((int)pid);
-                info.Name = process.ProcessName;
-                try { info.Started = process.StartTime.ToUniversalTime().Ticks; }
-                catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { }
-            }
-            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException) { }
+            info = ReadProcess(pid);
             if (cache != null) cache[pid] = info;
         }
-        return new WindowTarget(hwnd, pid, thread, className, title, info.Name, info.Started);
+        return info.IsSellFish ? null : new WindowTarget(hwnd, pid, thread, className, title, info.Name, info.Started);
+    }
+
+    private readonly record struct WindowProcess(string Name, long Started, bool IsSellFish);
+
+    private static WindowProcess ReadProcess(uint pid)
+    {
+        string name = $"进程 {pid}";
+        long started = 0;
+        bool isSellFish = false;
+        try
+        {
+            using var process = Process.GetProcessById((int)pid);
+            name = process.ProcessName;
+            if (name.Equals("sell fish", StringComparison.OrdinalIgnoreCase))
+            {
+                // 独立配置可以启动第二个实例。按程序标识识别，普通应用的窗口标题可以同名。
+                isSellFish = true;
+                if (process.MainModule?.FileVersionInfo is { } image)
+                    isSellFish = image.ProductName == "sell fish" && image.OriginalFilename == "sell fish.dll";
+            }
+            started = process.StartTime.ToUniversalTime().Ticks;
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException
+            or IOException or UnauthorizedAccessException) { }
+        return new(name, started, isSellFish);
     }
 
     private static WindowPlacement ReadPlacement(nint hwnd)
@@ -667,6 +697,7 @@ public sealed class WindowService : IDisposable
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool EnumWindows(EnumWindowsProc callback, nint parameter);
         [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
         [DllImport("user32.dll")] internal static extern nint GetShellWindow();
+        [DllImport("user32.dll")] internal static extern nint GetAncestor(nint hwnd, uint flags);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindow(nint hwnd);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindowVisible(nint hwnd);
         [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);

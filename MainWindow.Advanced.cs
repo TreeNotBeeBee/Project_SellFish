@@ -101,6 +101,7 @@ public sealed partial class MainWindow
             ToolbarSettingsPage.Visibility = Visibility.Collapsed;
             SettingsOverview.Visibility = Visibility.Visible;
         }
+        if (sender.SelectedItem != BasicTab) _windowPicking?.Cancel();
         if (sender.SelectedItem != AdvancedTab) _picking?.Cancel();
         RefreshAdvancedControls();
     }
