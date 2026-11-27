@@ -12,6 +12,7 @@ import time
 import uuid
 
 from pywinauto import mouse
+from pywinauto.uia_defines import NoPatternInterfaceError
 import win32con as wc
 import win32gui as gui
 
@@ -22,9 +23,16 @@ def choose_item(panel, box, text):
     box.expand()
     def select():
         for row in panel.descendants(control_type="ListItem"):
-            if row.is_visible() and text in row.window_text():
-                row.iface_selection_item.Select()
-                return True
+            if text not in row.window_text():
+                continue
+            # A bound target can start below the viewport on desktops with many windows.
+            if not row.is_visible():
+                try:
+                    row.iface_scroll_item.ScrollIntoView()
+                except NoPatternInterfaceError:
+                    pass
+            row.iface_selection_item.Select()
+            return True
         return False
     wait(select, f"selected {text}")
 

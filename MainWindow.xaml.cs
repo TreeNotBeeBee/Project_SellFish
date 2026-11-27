@@ -24,6 +24,7 @@ public sealed partial class MainWindow : Window
     private readonly NotificationAreaIcon? _tray;
     private ShortcutEditor? _shortcuts;
     private CancellationTokenSource? _windowPicking;
+    private TargetChoice? _pendingChoice;
     private int _requestedOpacity = 100;
     private bool _invert;
     private bool _gray;
@@ -37,6 +38,10 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        TargetBox.DropDownClosed += (_, _) =>
+        {
+            if (_pendingChoice != null) DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, CommitTargetChoice);
+        };
         _defaultTint = TintColorPicker.Color;
         ShowTintColor(_defaultTint);
         _opacityInput = new(this, OpacityInput, "不透明度", () => _requestedOpacity, SetRequestedOpacity);
@@ -152,7 +157,7 @@ public sealed partial class MainWindow : Window
 
     private void RefreshList()
     {
-        if (TargetBox.IsDropDownOpen || _windows.Target != null || _windowPicking != null) return;
+        if (TargetBox.IsDropDownOpen || _windows.Target != null || _windowPicking != null || _pendingChoice != null) return;
         var choices = _windows.Enumerate()
             .OrderBy(w => w.Display, StringComparer.CurrentCultureIgnoreCase)
             .Select(w => new TargetChoice(w.Display, w)).ToList();
@@ -177,6 +182,23 @@ public sealed partial class MainWindow : Window
     private void SelectTarget(object sender, SelectionChangedEventArgs e)
     {
         if (!_ready || _updating || _windowPicking != null || TargetBox.SelectedItem is not TargetChoice choice) return;
+        // SelectionChanged 仍在下拉项的焦点/自动化回调中。此时更换 ItemsSource
+        // 会销毁 WinUI 正在处理的列表项，先让弹层收起再完成绑定或释放。
+        _pendingChoice = choice;
+        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, CommitTargetChoice);
+    }
+
+    private void CommitTargetChoice()
+    {
+        if (!_ready || _pendingChoice is not { } choice) return;
+        if (TargetBox.IsDropDownOpen)
+        {
+            // UI Automation 的 Select 不一定会收起列表。DropDownClosed 会再次排队。
+            TargetBox.IsDropDownOpen = false;
+            return;
+        }
+        _pendingChoice = null;
+        if (_windowPicking != null || TargetBox.SelectedItem is not TargetChoice selected || selected != choice) return;
         Run(() =>
         {
             if (choice.Target == null) Release();
@@ -186,7 +208,7 @@ public sealed partial class MainWindow : Window
 
     private async void PickWindow(object sender, RoutedEventArgs args)
     {
-        if (!_ready || _windowPicking != null || _windows.Target != null) return;
+        if (!_ready || _windowPicking != null || _pendingChoice != null || _windows.Target != null) return;
         using var cancellation = new CancellationTokenSource();
         _windowPicking = cancellation;
         const string hint = "请单击要绑定的窗口，按 Esc 取消。";
@@ -261,6 +283,7 @@ public sealed partial class MainWindow : Window
         // 恢复窗口前撤销两项延迟提交，避免把旧输入应用到下一次绑定。
         _opacityInput.Stop();
         _tintInput.Stop();
+        _pendingChoice = null;
         TintColorButton.Flyout.Hide();
         EndDetachedSession();
         _effects.Stop();
@@ -270,9 +293,9 @@ public sealed partial class MainWindow : Window
         _requestedOpacity = 100;
         _opacityInput.ShowValue();
         SyncControls();
-        // SelectionChanged may be running inside the open binding list.
         TargetBox.IsDropDownOpen = false;
-        RefreshList();
+        // 目标也可能在下拉框打开时自行关闭，延后一轮重建未绑定的窗口列表。
+        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => { if (_ready) Run(RefreshList); });
         Status("");
     }
 
