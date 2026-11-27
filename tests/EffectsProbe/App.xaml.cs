@@ -2,7 +2,10 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Xaml;
+using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
+using Windows.Graphics.DirectX.Direct3D11;
+using WinRT;
 using Windows.UI;
 using WindowPilot;
 
@@ -54,20 +57,20 @@ public partial class App : Application
             result["desktopInversionDetected"] = displayInverted;
             string Calibrate(string rgb) => displayInverted ? (0xFFFFFF ^ Convert.ToUInt32(rgb, 16)).ToString("X6") : rgb;
             Checkpoint("capture source at native alpha levels");
-            byte[] baselinePixels = await EffectSession.CaptureSampleAsync(_target);
+            byte[] baselinePixels = await CaptureSampleAsync(_target);
             result["baseline"] = Histogram(baselinePixels);
             SetWindowLongPtr(_target, -20, GetWindowLongPtr(_target, -20) | 0x80000);
             SetLayeredWindowAttributes(_target, 0, 3, 2);
             await Task.Delay(500);
-            byte[] alpha3Pixels = await EffectSession.CaptureSampleAsync(_target);
+            byte[] alpha3Pixels = await CaptureSampleAsync(_target);
             result["nativeAlpha3"] = Histogram(alpha3Pixels);
             SetLayeredWindowAttributes(_target, 0, 1, 2);
             await Task.Delay(500);
-            byte[] alpha1Pixels = await EffectSession.CaptureSampleAsync(_target);
+            byte[] alpha1Pixels = await CaptureSampleAsync(_target);
             result["nativeAlpha1"] = Histogram(alpha1Pixels);
             SetLayeredWindowAttributes(_target, 0, 0, 2);
             await Task.Delay(500);
-            try { result["nativeAlpha0"] = Histogram(await EffectSession.CaptureSampleAsync(_target, TimeSpan.FromSeconds(2))); } catch (Exception ex) { result["nativeAlpha0Error"] = ex.Message; }
+            try { result["nativeAlpha0"] = Histogram(await CaptureSampleAsync(_target, TimeSpan.FromSeconds(2))); } catch (Exception ex) { result["nativeAlpha0Error"] = ex.Message; }
             result["lowAlphaSourceCorrect"] = Dominant(baselinePixels) == 0xFFFF0000 && Dominant(alpha3Pixels) == 0xFFFF0000 && Dominant(alpha1Pixels) == 0xFFFF0000;
             SetLayeredWindowAttributes(_target, 0, 1, 2);
             await Task.Delay(100);
@@ -85,7 +88,7 @@ public partial class App : Application
             result["invertScreenCenter"] = ScreenPixel(400, 320);
             result["invertScreenCalibrated"] = Calibrate((string)result["invertScreenCenter"]);
             result["invertCorrect"] = Dominant(effects.ReadRenderedPixelsForDiagnostics()!) == 0xFF00FFFF && (string)result["invertScreenCalibrated"] == "00FFFF";
-            result["sourceWhileInverting"] = Histogram(await EffectSession.CaptureSampleAsync(_target));
+            result["sourceWhileInverting"] = Histogram(await CaptureSampleAsync(_target));
             result["inputTarget"] = WindowFromPoint(new EffectNative.Point(400, 320)).ToInt64();
             result["inputPassThroughCorrect"] = WindowFromPoint(new EffectNative.Point(400, 320)) == _target;
             effects.Update(_target, true, true, 50, false, false);
@@ -124,7 +127,7 @@ public partial class App : Application
             await Task.Delay(120);
             result["occludedScreenCenter"] = ScreenPixel(400, 320);
             result["occludedScreenCalibrated"] = Calibrate((string)result["occludedScreenCenter"]);
-            result["sourceWhileOccluded"] = Histogram(await EffectSession.CaptureSampleAsync(_target));
+            result["sourceWhileOccluded"] = Histogram(await CaptureSampleAsync(_target));
             result["zOrder"] = new { Target = _target.ToInt64(), Overlay = effects.OverlayHandle.ToInt64(), Occluder = _occluder.ToInt64(), BeforeTarget = EffectNative.GetWindow(_target, 3).ToInt64(), BeforeOverlay = EffectNative.GetWindow(effects.OverlayHandle, 3).ToInt64() };
             result["occlusionCorrect"] = Calibrate(ScreenPixel(400, 320)) == "0000FF";
             EffectNative.SetWindowPos(_target, -1, 0, 0, 0, 0, 0x13);
@@ -195,6 +198,32 @@ public partial class App : Application
             Exit();
         }
     }
+
+    private static Task<byte[]> CaptureSampleAsync(nint hwnd, TimeSpan? timeout = null) => Task.Run(async () =>
+    {
+        // Keep the target's message loop free while its capture session opens and closes.
+        // Only one frame is needed. Poll the free-threaded pool without a competing FrameArrived reader.
+        using var device = new CanvasDevice();
+        var item = CaptureInterop.ForWindow(hwnd);
+        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device.As<IDirect3DDevice>(),
+            DirectXPixelFormat.B8G8R8A8UIntNormalized, 1, item.Size);
+        using var session = pool.CreateCaptureSession(item);
+        session.IsCursorCaptureEnabled = false;
+        session.StartCapture();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var limit = timeout ?? TimeSpan.FromSeconds(5);
+        while (elapsed.Elapsed < limit)
+        {
+            using var frame = pool.TryGetNextFrame();
+            if (frame != null)
+            {
+                using var bitmap = CanvasBitmap.CreateFromDirect3D11Surface(device, frame.Surface, 96);
+                return bitmap.GetPixelBytes();
+            }
+            await Task.Delay(16).ConfigureAwait(false);
+        }
+        throw new TimeoutException("No image arrived from the disposable window.");
+    });
 
     private async Task CheckTintAsync(EffectSession effects, Dictionary<string, object> result,
         Func<string, string> calibrate, uint untintedGrayAtHalfOpacity)

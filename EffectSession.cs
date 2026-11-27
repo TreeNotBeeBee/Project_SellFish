@@ -248,29 +248,6 @@ public sealed class EffectSession : IDisposable
         _startup.Reset();
     }
     public void Dispose() { if (_disposed) return; Stop(); _disposed = true; }
-
-    internal static async Task<byte[]> CaptureSampleAsync(nint hwnd, TimeSpan? timeout = null)
-    {
-        using var device = new CanvasDevice();
-        var item = CaptureInterop.ForWindow(hwnd);
-        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device.As<IDirect3DDevice>(), DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, item.Size);
-        using var session = pool.CreateCaptureSession(item);
-        session.IsCursorCaptureEnabled = false;
-        var completion = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        pool.FrameArrived += (sender, _) =>
-        {
-            try
-            {
-                using var frame = sender.TryGetNextFrame();
-                if (frame is null) return;
-                using var bitmap = CanvasBitmap.CreateFromDirect3D11Surface(device, frame.Surface, 96);
-                completion.TrySetResult(bitmap.GetPixelBytes());
-            }
-            catch (Exception ex) { completion.TrySetException(ex); }
-        };
-        session.StartCapture();
-        return await completion.Task.WaitAsync(timeout ?? TimeSpan.FromSeconds(5));
-    }
 }
 
 internal static class CaptureInterop
