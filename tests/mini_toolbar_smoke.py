@@ -139,7 +139,7 @@ def check_pages(panel, profile):
     assert sorted(tabs, key=lambda key: field(panel, key).rectangle().left) == tabs
     assert [field(panel, key).window_text() for key in tabs] == ["基础", "进阶", "快捷键", "设置"]
     effects = ["TopmostBox", "HiddenBox", "ClickThroughBox", "InvertBox", "GrayBox"]
-    basic = {"TargetBox", "PickWindowButton", "OpacityInput", *effects}
+    basic = {"TargetBox", "PickWindowButton", "OpacityInput", "TintColorButton", "TintStrengthInput", *effects}
     recorders = {stem + suffix for stem in ("Hide", "Through", "OpacityUp", "OpacityDown")
                  for suffix in ("ShortcutBox", "ShortcutClear")}
     settings = {"ThemeBox", "ToolPin", "MiniStyleBox", "EditToolbarActions"}
@@ -149,6 +149,10 @@ def check_pages(panel, profile):
     selector, picker = [field(panel, key).rectangle() for key in ("TargetBox", "PickWindowButton")]
     checks = [field(panel, key).rectangle() for key in effects]
     opacity = field(panel, "OpacityInput").rectangle()
+    swatch, strength = [field(panel, key).rectangle() for key in ("TintColorButton", "TintStrengthInput")]
+    assert opacity.right <= swatch.left < swatch.right <= strength.left < strength.right <= panel.rectangle().right
+    assert max(opacity.top, swatch.top, strength.top) < min(opacity.bottom, swatch.bottom, strength.bottom)
+    assert not field(panel, "TintColorButton").is_enabled() and not field(panel, "TintStrengthInput").is_enabled()
     assert selector.left < selector.right <= picker.left and selector.top <= picker.mid_point().y <= selector.bottom
     assert max(selector.bottom, picker.bottom) <= min(box.top for box in checks)
     assert max(box.top for box in checks) < min(box.bottom for box in checks)

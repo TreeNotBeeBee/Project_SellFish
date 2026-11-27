@@ -2,19 +2,19 @@
 
 **sell fish 是一款简洁的 Windows 窗口控制软件，目前仍在开发中。**
 
-从下拉框选取窗口，或用鼠标直接点选后，就可以隐藏窗口和它的任务栏按钮、置顶、调节不透明度、反色、灰度或让鼠标穿透。还可以把窗口里可访问的文本或输入框放到独立浮窗中。所有功能都由 Windows 桌面程序提供。
+从下拉框选取窗口，或用鼠标直接点选后，就可以隐藏窗口和它的任务栏按钮、置顶、调节不透明度、加彩色滤镜、反色、灰度或让鼠标穿透。还可以把窗口里可访问的文本或输入框放到独立浮窗中。所有功能都由 Windows 桌面程序提供。
 
 ## 使用
 
 从 [GitHub Releases](https://github.com/TreeNotBeeBee/Project_SellFish/releases) 下载 Windows x64 压缩包。解压整个文件夹后运行 **sell fish.exe**。升级前先退出旧版，让它恢复已绑定的窗口。新版沿用原来的主题和快捷键设置。
 
-![基础页，第一行选择窗口，第二行切换五种效果，第三行输入不透明度](Assets/BasicPanelPreview.png)
+![基础页，不透明度右侧是滤镜颜色方块和强度输入框](Assets/BasicPanelPreview.png)
 
 1. 在 **基础** 页打开下拉框选定窗口，或点 **点击选择**，再单击目标窗口。点在窗口里的按钮或输入框上也能选中整个窗口，这一击只用于选择。按 **Esc** 可取消。sell fish 会排除自己的面板、迷你工具栏和分离浮窗。绑定后，要换目标时先在下拉框里选 **释放并恢复窗口**。
 2. 勾选 **隐藏**，或按隐藏快捷键（初始为 **Ctrl + Shift + H**）。再次按同一组合即可显示。**页面穿透**（初始为 **Ctrl + Shift + P**）让鼠标直接操作下方的窗口，再按一次恢复目标的鼠标交互。
 3. 打开 **快捷键** 页，可以分别设置隐藏、页面穿透、增加和减少不透明度。点击对应的框，按下并松开想用的键即可保存。点框旁的 **⌫**，或在录入时单按 **Backspace**，即可清除这一项。下次启动时仍为空。**Esc** 取消本次录入。可以将 **左 Ctrl** 单独分配给隐藏，将 **右 Ctrl** 单独分配给穿透。单个修饰键在松开时触发，与其他键或鼠标一起使用会取消本次单键动作。新录入的 Ctrl、Alt、Shift、Win 组合区分左右，旧配置继续响应两侧。
 4. 在基础页第三行的 **不透明度** 框输入 0 至 100 的整数，稍停、按 Enter 或离开输入框即可生效。输入 **0** 可让目标完全透明，输入 **100** 可恢复全不透明。也可以为增加和减少分别设置全局快捷键，每按一次调整 **10 个百分点**。两项快捷键初始均为空。对钉钉等会自行重设透明度的窗口，程序可用独立图层实时混合目标后面的画面。
-5. **反色** 和 **灰度** 可同时开启。隐藏时保留选项，再次显示时恢复组合效果。
+5. **颜色滤镜** 位于不透明度右侧。绑定窗口后，点击「滤镜」旁的颜色方块打开色盘，选色后点色盘外关闭。在方块右侧输入强度，例如输入 **25** 表示混入 25% 的所选颜色。**0%** 关闭染色，**100%** 将窗口内容填成所选颜色。每次绑定从 0% 开始。可以同时开启反色和灰度，再为处理后的画面着色。窗口不透明度单独控制整幅画面的透明程度。隐藏后再显示会恢复这组效果。
 6. 拖动面板空白处可移动窗口，在 **设置 → 主题** 中可切换黑白外观。点右上角 **—** 收起为迷你工具栏。按住工具栏左端的标志拖动，点最右侧的展开按钮回到刚才的页面。主面板和迷你工具栏都可以拖到另一台显示器。拖到桌面边缘或任务栏时，窗口会停在当前屏幕的可用区域内。
 7. 在绑定下拉框选择 **释放并恢复窗口**，或点击 **×** 退出，程序会恢复目标原来的置顶、透明度、可见性和鼠标穿透状态。
 
@@ -79,6 +79,7 @@ dotnet run --project .\tests\DetachedProbe\DetachedProbe.csproj -c Release
 ```powershell
 python -X utf8 tests/ui_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/window_picker_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
+python -X utf8 tests/tint_ui_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/shortcut_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/advanced_ui_smoke.py "dist/WindowPilot-win-x64/sell fish.exe"
 python -X utf8 tests/mini_toolbar_smoke.py "dist/WindowPilot-win-x64/sell fish.exe" --drag

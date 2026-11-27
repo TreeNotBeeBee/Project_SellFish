@@ -97,14 +97,39 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="不透明度" Style="{StaticResource FieldLabel}"/>
                 <TextBox x:Name="OpacityInput" Grid.Column="1" Width="72" Text="100" MaxLength="3" InputScope="Number"
                          HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="6,4"
                          IsSpellCheckEnabled="False" IsTextPredictionEnabled="False"
                          AutomationProperties.AutomationId="OpacityInput" AutomationProperties.Name="不透明度百分比"
-                         ToolTipService.ToolTip="输入 0 到 100，按 Enter 或离开输入框生效" LostFocus="CommitOpacity" KeyDown="OpacityInputKeyDown"/>
+                         ToolTipService.ToolTip="输入 0 到 100，按 Enter 或离开输入框生效"/>
                 <TextBlock Grid.Column="2" Text="%" Style="{StaticResource FieldLabel}"/>
+                <TextBlock Grid.Column="3" Text="滤镜" Margin="14,0,0,0" Style="{StaticResource FieldLabel}"/>
+                <Button x:Name="TintColorButton" Grid.Column="4" Width="32" Height="32" MinWidth="0" Padding="0"
+                        AutomationProperties.AutomationId="TintColorButton" ToolTipService.ToolTip="选择滤镜颜色">
+                    <Button.Flyout>
+                        <Flyout ShouldConstrainToRootBounds="False">
+                            <ColorPicker x:Name="TintColorPicker" Color="#FFB454" IsAlphaEnabled="False"
+                                         IsColorPreviewVisible="False" IsMoreButtonVisible="False"
+                                         AutomationProperties.AutomationId="TintColorPicker" AutomationProperties.Name="滤镜颜色"/>
+                        </Flyout>
+                    </Button.Flyout>
+                    <Border Width="22" Height="22" CornerRadius="2" BorderThickness="1"
+                            BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}">
+                        <Border.Background><SolidColorBrush x:Name="TintSwatchBrush"/></Border.Background>
+                    </Border>
+                </Button>
+                <TextBox x:Name="TintStrengthInput" Grid.Column="5" Width="64" Text="0" MaxLength="3" InputScope="Number"
+                         HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="6,4"
+                         IsSpellCheckEnabled="False" IsTextPredictionEnabled="False"
+                         AutomationProperties.AutomationId="TintStrengthInput" AutomationProperties.Name="滤镜强度百分比"
+                         ToolTipService.ToolTip="输入 0 到 100 的整数，0 表示关闭彩色滤镜"/>
+                <TextBlock Grid.Column="6" Text="%" Style="{StaticResource FieldLabel}"/>
             </Grid>
         </Grid>
 

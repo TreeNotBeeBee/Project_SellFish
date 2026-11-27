@@ -1,11 +1,10 @@
-using System.Globalization;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
-using VirtualKey = Windows.System.VirtualKey;
 using WinRT.Interop;
+using Windows.UI;
 
 namespace WindowPilot;
 
@@ -18,7 +17,9 @@ public sealed partial class MainWindow : Window
     private readonly EffectSession _effects = new();
     private readonly DispatcherQueueTimer _refresh;
     private readonly DispatcherQueueTimer _guard;
-    private readonly DispatcherQueueTimer _typing;
+    private readonly PercentageInput _opacityInput;
+    private readonly PercentageInput _tintInput;
+    private readonly Color _defaultTint;
     private readonly CompactWindow _panel;
     private readonly NotificationAreaIcon? _tray;
     private ShortcutEditor? _shortcuts;
@@ -26,14 +27,25 @@ public sealed partial class MainWindow : Window
     private int _requestedOpacity = 100;
     private bool _invert;
     private bool _gray;
+    private int _tintStrength;
     private bool _updating;
     private bool _ready;
-    private bool _writeOpacityText;
     private long _retryGuardAt;
+
+    private bool HasFilters => _invert || _gray || _tintStrength > 0;
 
     public MainWindow()
     {
         InitializeComponent();
+        _defaultTint = TintColorPicker.Color;
+        ShowTintColor(_defaultTint);
+        _opacityInput = new(this, OpacityInput, "不透明度", () => _requestedOpacity, SetRequestedOpacity);
+        _tintInput = new(this, TintStrengthInput, "滤镜强度", () => _tintStrength, SetTintStrength);
+        TintColorPicker.ColorChanged += (_, args) =>
+        {
+            ShowTintColor(args.NewColor);
+            if (_ready && _windows.Target != null && _tintStrength > 0) Run(ApplyAppearance);
+        };
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "FishBasket.ico");
         AppWindow.SetIcon(iconPath);
         MiniToggle[] actions =
@@ -52,17 +64,6 @@ public sealed partial class MainWindow : Window
         });
         InitializeToolbarSettings(toolbarSettings, actions);
         InitializeDetachedControls();
-        _typing = DispatcherQueue.CreateTimer();
-        _typing.Interval = TimeSpan.FromMilliseconds(320);
-        _typing.IsRepeating = false;
-        _typing.Tick += (_, _) => Run(() => CommitNumber(finalize: false));
-        OpacityInput.TextChanged += (_, _) =>
-        {
-            if (!_ready || _updating || _writeOpacityText || _windows.Target == null) return;
-            _typing.Stop();
-            _typing.Start();
-        };
-
         _refresh = DispatcherQueue.CreateTimer();
         _refresh.Interval = TimeSpan.FromSeconds(2);
         _refresh.Tick += (_, _) => Run(RefreshState);
@@ -91,7 +92,8 @@ public sealed partial class MainWindow : Window
             EndDetachedSession();
             _refresh.Stop();
             _guard.Stop();
-            _typing.Stop();
+            _opacityInput.Stop();
+            _tintInput.Stop();
             _shortcuts?.Dispose();
             _effects.Dispose();
             _panel.Dispose();
@@ -216,10 +218,11 @@ public sealed partial class MainWindow : Window
         try { _windows.Bind(target); }
         catch { TargetBox.SelectedIndex = -1; throw; }
         _requestedOpacity = _windows.Opacity ?? 100;
-        _invert = _gray = false;
+        ResetFilters();
+        TintColorPicker.Color = _defaultTint;
         _retryGuardAt = 0;
         ShowBoundChoice(target);
-        ShowOpacityNumber();
+        _opacityInput.ShowValue();
         SyncControls();
         Status("");
     }
@@ -239,6 +242,7 @@ public sealed partial class MainWindow : Window
             ClickThroughBox.IsChecked = bound && _windows.IsClickThrough;
             bool supported = bound && _windows.Opacity.HasValue;
             OpacityInput.IsEnabled = InvertBox.IsEnabled = GrayBox.IsEnabled = supported;
+            TintColorButton.IsEnabled = TintStrengthInput.IsEnabled = supported;
             InvertBox.IsChecked = _invert;
             GrayBox.IsChecked = _gray;
             RefreshAdvancedControls();
@@ -246,23 +250,25 @@ public sealed partial class MainWindow : Window
         finally { _updating = false; }
     }
 
-    private void ShowOpacityNumber()
+    private void ShowTintColor(Color color)
     {
-        _writeOpacityText = true;
-        try { OpacityInput.Text = _requestedOpacity.ToString(CultureInfo.InvariantCulture); }
-        finally { _writeOpacityText = false; }
+        TintSwatchBrush.Color = color;
+        AutomationProperties.SetName(TintColorButton, $"滤镜颜色 #{color.R:X2}{color.G:X2}{color.B:X2}");
     }
 
     private void Release()
     {
-        // 先撤销待提交的透明度和分离控件，再恢复窗口，避免迟到的回调操作旧目标。
-        _typing.Stop();
+        // 恢复窗口前撤销两项延迟提交，避免把旧输入应用到下一次绑定。
+        _opacityInput.Stop();
+        _tintInput.Stop();
+        TintColorButton.Flyout.Hide();
         EndDetachedSession();
         _effects.Stop();
         _windows.Release();
-        _invert = _gray = false;
+        ResetFilters();
+        TintColorPicker.Color = _defaultTint;
         _requestedOpacity = 100;
-        ShowOpacityNumber();
+        _opacityInput.ShowValue();
         SyncControls();
         // SelectionChanged may be running inside the open binding list.
         TargetBox.IsDropDownOpen = false;
@@ -279,7 +285,7 @@ public sealed partial class MainWindow : Window
         try { _windows.SetHidden(hide); }
         finally
         {
-            if (!_windows.IsHidden && (_invert || _gray)) ApplyAppearance();
+            if (!_windows.IsHidden && HasFilters) ApplyAppearance();
             SyncControls();
         }
         Status("");
@@ -305,62 +311,26 @@ public sealed partial class MainWindow : Window
         if (_windows.Target == null) return;
         try { _windows.SetTopmost(enabled); }
         finally { SyncControls(); }
-        if (_invert || _gray) ApplyAppearance();
+        if (HasFilters) ApplyAppearance();
         Status("");
     }
 
-    private void CommitOpacity(object sender, RoutedEventArgs e)
+    private void SetTintStrength(int value)
     {
-        if (_ready) Run(() => CommitNumber(finalize: true));
-    }
-
-    private void OpacityInputKeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key == VirtualKey.Enter)
-        {
-            e.Handled = true;
-            Run(() => CommitNumber(finalize: true));
-        }
-        else if (e.Key == VirtualKey.Escape)
-        {
-            e.Handled = true;
-            _typing.Stop();
-            ShowOpacityNumber();
-        }
-    }
-
-    private void CommitNumber(bool finalize)
-    {
-        _typing.Stop();
-        if (_windows.Target == null || !OpacityInput.IsEnabled) return;
-        if (!TryReadOpacity(out int value))
-        {
-            if (finalize)
-            {
-                ShowOpacityNumber();
-                Status("不透明度可输入 0 到 100 的整数。");
-            }
-            return;
-        }
-        if (value != _requestedOpacity) SetRequestedOpacity(value);
-        if (finalize) ShowOpacityNumber();
-    }
-
-    private bool TryReadOpacity(out int value)
-    {
-        string raw = OpacityInput.Text.Trim().TrimEnd('%', '％').Trim();
-        return int.TryParse(raw, NumberStyles.None, CultureInfo.CurrentCulture, out value) && value is >= 0 and <= 100;
+        _tintStrength = value;
+        ApplyAppearance();
+        Status("");
     }
 
     private void StepOpacity(int delta)
     {
         if (!_ready || _windows.Target == null || !OpacityInput.IsEnabled) return;
         // 数字框延迟提交。若用户刚输入了有效值，从该值步进，只向目标窗口应用一次最终结果。
-        int basis = _typing.IsRunning && TryReadOpacity(out int pending) ? pending : _requestedOpacity;
-        _typing.Stop();
+        int basis = _opacityInput.PendingOrCurrentValue;
+        _opacityInput.Stop();
         int next = Math.Clamp(basis + delta, 0, 100);
         if (next != _requestedOpacity) SetRequestedOpacity(next);
-        ShowOpacityNumber();
+        _opacityInput.ShowValue();
     }
 
     private void SetRequestedOpacity(int value)
@@ -382,24 +352,32 @@ public sealed partial class MainWindow : Window
         ApplyAppearance();
     }
 
+    private void ResetFilters()
+    {
+        _invert = _gray = false;
+        _tintStrength = 0;
+        _tintInput.ShowValue();
+    }
+
     private void ApplyAppearance()
     {
         if (_windows.Target is not { } target) return;
         try
         {
-            bool render = (_invert || _gray) && _requestedOpacity > 0 && !_windows.IsHidden;
+            bool render = HasFilters && _requestedOpacity > 0 && !_windows.IsHidden;
             if (!render) _effects.Stop();
             // 滤镜由叠加层绘制；原窗口保留 1/255 的不透明度以接收鼠标输入。
             if (render) _windows.SetOpacityByte(1);
             else _windows.SetOpacity(_requestedOpacity);
-            if (render) _effects.Update(target.Handle, _invert, _gray, _requestedOpacity, false, _windows.IsTopmost);
+            if (render) _effects.Update(target.Handle, _invert, _gray, _requestedOpacity, false, _windows.IsTopmost,
+                TintColorPicker.Color, _tintStrength);
         }
         catch
         {
             _effects.Stop();
-            _invert = _gray = false;
+            ResetFilters();
             try { _windows.SetOpacity(_requestedOpacity); }
-            finally { _requestedOpacity = _windows.Opacity ?? 100; ShowOpacityNumber(); }
+            finally { _requestedOpacity = _windows.Opacity ?? 100; _opacityInput.ShowValue(); }
             throw;
         }
         finally { SyncControls(); }
@@ -407,10 +385,10 @@ public sealed partial class MainWindow : Window
 
     private void HandleEffectFailure(string message)
     {
-        if (_windows.Target == null || !(_invert || _gray)) return;
+        if (_windows.Target == null || !HasFilters) return;
         Run(() =>
         {
-            _invert = _gray = false;
+            ResetFilters();
             ApplyAppearance();
             Status("滤镜已关闭：" + message);
         });

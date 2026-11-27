@@ -8,6 +8,7 @@ using Windows.Graphics;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
+using Windows.UI;
 using WinRT;
 
 namespace WindowPilot;
@@ -32,6 +33,8 @@ public sealed class EffectSession : IDisposable
     private nint _target;
     private bool _invert, _grayscale, _hidden, _topmost, _disposed, _failed;
     private int _opacity = 100;
+    private Color _tintColor;
+    private int _tintStrength;
     private int _pending;
     private int _generation;
     private long _lastFrame;
@@ -55,21 +58,27 @@ public sealed class EffectSession : IDisposable
         _tracking.Tick += (_, _) => { try { TrackTarget(); } catch (Exception ex) { Fail("颜色效果停止：" + ex.Message); } };
     }
 
-    public void Update(nint hwnd, bool invert, bool grayscale, int opacity, bool hidden, bool topmost)
+    public void Update(nint hwnd, bool invert, bool grayscale, int opacity, bool hidden, bool topmost,
+        Color tintColor = default, int tintStrength = 0)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!_dispatcher.HasThreadAccess) throw new InvalidOperationException("颜色效果必须在界面线程更新。");
         if (opacity is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(opacity));
-        bool enabled = invert || grayscale;
-        if (hwnd == 0 || !enabled) { Stop(); return; }
-        bool changed = _invert != invert || _grayscale != grayscale || _opacity != opacity;
-        _invert = invert; _grayscale = grayscale; _opacity = opacity; _hidden = hidden; _topmost = topmost;
-        if (_target != hwnd || _session is null)
-        {
-            Stop();
-            _invert = invert; _grayscale = grayscale; _opacity = opacity; _hidden = hidden; _topmost = topmost;
-            Start(hwnd);
-        }
+        if (tintStrength is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(tintStrength));
+        if (hwnd == 0 || (!invert && !grayscale && tintStrength == 0)) { Stop(); return; }
+        bool changed = _invert != invert || _grayscale != grayscale || _opacity != opacity ||
+            _tintStrength != tintStrength || (tintStrength > 0 && !_tintColor.Equals(tintColor)) ||
+            (_hidden && !hidden);
+        bool restart = _target != hwnd || _session is null;
+        if (restart) Stop();
+        _invert = invert;
+        _grayscale = grayscale;
+        _opacity = opacity;
+        _hidden = hidden;
+        _topmost = topmost;
+        _tintStrength = tintStrength;
+        _tintColor = tintColor;
+        if (restart) Start(hwnd);
         else if (changed)
         {
             _lastFrame = 0;
@@ -174,6 +183,8 @@ public sealed class EffectSession : IDisposable
         if (invert is not null) image = invert;
         using var grayscale = _grayscale ? new GrayscaleEffect { Source = image } : null;
         if (grayscale is not null) image = grayscale;
+        using var tint = _tintStrength > 0 ? CreateTintEffect(image, _tintColor, _tintStrength) : null;
+        if (tint is not null) image = tint;
         _renderTarget ??= new CanvasRenderTarget(_device, _size.Width, _size.Height, 96, DirectXPixelFormat.B8G8R8A8UIntNormalized, CanvasAlphaMode.Premultiplied);
         using (var drawing = _renderTarget.CreateDrawingSession())
         {
@@ -184,6 +195,23 @@ public sealed class EffectSession : IDisposable
         _overlay.Present(pixels, _size.Width, _size.Height);
         _hasFrame = true; RenderedFrames++;
         TrackTarget();
+    }
+
+    internal static ColorMatrixEffect CreateTintEffect(ICanvasImage source, Color color, int strength)
+    {
+        float mix = strength / 100f;
+        float original = 1f - mix;
+        // Win2D 在非预乘的 RGB 上插值，再按原 alpha 预乘，保留半透明边缘和透明区域。
+        return new ColorMatrixEffect
+        {
+            Source = source,
+            AlphaMode = CanvasAlphaMode.Premultiplied,
+            ColorMatrix = new Matrix5x4
+            {
+                M11 = original, M22 = original, M33 = original, M44 = 1,
+                M51 = mix * color.R / 255f, M52 = mix * color.G / 255f, M53 = mix * color.B / 255f
+            }
+        };
     }
 
     private void TrackTarget()

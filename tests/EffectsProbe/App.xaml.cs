@@ -1,6 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Xaml;
+using Windows.Graphics.DirectX;
+using Windows.UI;
 using WindowPilot;
 
 namespace EffectsTest;
@@ -15,10 +18,16 @@ public partial class App : Application
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         var result = new Dictionary<string, object>();
+        string resultPath = Environment.GetEnvironmentVariable("WINDOWPILOT_EFFECTS_RESULT")
+            ?? Path.Combine(AppContext.BaseDirectory, "effects-probe.json");
+        // WGC or the display driver may stall before finally can write the full results.
+        void Checkpoint(string phase) =>
+            File.WriteAllText(resultPath, JsonSerializer.Serialize(new { phase, success = false }));
         EffectSession? effects = null;
         nint brush = 0;
         try
         {
+            Checkpoint("create test windows");
             brush = CreateSolidBrush(0x000000FF);
             var wc = new EffectNative.WndClass { Size = (uint)Marshal.SizeOf<EffectNative.WndClass>(), ClassName = "WindowPilot.EffectsProbe", Proc = Proc, Instance = EffectNative.GetModuleHandle(null), Background = brush };
             EffectNative.RegisterClassEx(ref wc);
@@ -44,6 +53,7 @@ public partial class App : Application
             bool displayInverted = calibration["black"] == "FFFFFF" && calibration["white"] == "000000" && calibration["red"] == "00FFFF" && calibration["green"] == "FF00FF" && calibration["blue"] == "FFFF00";
             result["desktopInversionDetected"] = displayInverted;
             string Calibrate(string rgb) => displayInverted ? (0xFFFFFF ^ Convert.ToUInt32(rgb, 16)).ToString("X6") : rgb;
+            Checkpoint("capture source at native alpha levels");
             byte[] baselinePixels = await EffectSession.CaptureSampleAsync(_target);
             result["baseline"] = Histogram(baselinePixels);
             SetWindowLongPtr(_target, -20, GetWindowLongPtr(_target, -20) | 0x80000);
@@ -64,6 +74,7 @@ public partial class App : Application
             result["beforeOverlayScreen"] = ScreenPixel(400, 320);
             GetLayeredWindowAttributes(_target, out uint sourceKey, out byte sourceAlpha, out uint sourceFlags);
             result["sourceAlpha"] = sourceAlpha;
+            Checkpoint("present inversion and grayscale");
             effects = new EffectSession();
             effects.Failed += error => result["rendererFailure"] = error;
             effects.Update(_target, true, false, 100, false, false);
@@ -88,6 +99,7 @@ public partial class App : Application
             result["combinedCorrect"] = (combinedPixel >> 24) == 128 && ((combinedPixel >> 16) & 255) == ((combinedPixel >> 8) & 255) && ((combinedPixel >> 8) & 255) == (combinedPixel & 255) && Math.Abs((int)((combinedScreen >> 16) & 255) - (int)((combinedPixel >> 16) & 255)) <= 2 && Math.Abs((int)((combinedScreen >> 8) & 255) - (int)((combinedPixel >> 8) & 255)) <= 2 && Math.Abs((int)(combinedScreen & 255) - (int)(combinedPixel & 255)) <= 2;
             // Simulate the client owning its alpha again while the color filter remains
             // enabled. The backdrop must mask the red original under the 50% gray overlay.
+            Checkpoint("verify backdrop and occlusion");
             using var stableBackdrop = new BackdropOpacityLayer(_target);
             SetLayeredWindowAttributes(_target, 0, 255, 2);
             for (int frame = 0; frame < 15; frame++)
@@ -129,6 +141,7 @@ public partial class App : Application
             result["stableRestoredAfterOcclusion"] = Calibrate(ScreenPixel(400,320)) == stableColor;
             stableBackdrop.Hide();
             SetLayeredWindowAttributes(_target, 0, 1, 2);
+            Checkpoint("resize, minimize and hide");
             int oldPixelLength = effects.ReadRenderedPixelsForDiagnostics()!.Length;
             EffectNative.SetWindowPos(_target, 0, 160, 140, 560, 360, 0x14);
             await Task.Delay(650);
@@ -152,13 +165,17 @@ public partial class App : Application
             effects.Update(_target, true, true, 0, false, false);
             await Task.Delay(200);
             result["zeroOverlay"] = !EffectNative.IsWindowVisible(effects.OverlayHandle);
+            Checkpoint("check tint strengths, combinations and source alpha");
+            await CheckTintAsync(effects, result, Calibrate, combinedPixel);
             effects.Stop();
             string[] checks = [
                 "lowAlphaSourceCorrect", "invertCorrect", "combinedCorrect", "stableFilteredCorrect",
                 "stableFilteredInputCorrect", "stableRestoredAfterOcclusion", "occlusionCorrect",
                 "topmostOcclusionCorrect", "inputPassThroughCorrect", "resizeCorrect",
                 "staticRepaintImmediate", "minimizedOverlay", "restoredOverlay", "hiddenOverlay",
-                "reshownOverlay", "zeroOverlay"
+                "reshownOverlay", "zeroOverlay", "tintQuarter", "tintFull", "tintColorOnlyChange",
+                "tintStacked", "tintZeroWithEffects", "tintHitTarget", "tintHidden", "tintReshown", "tintZeroAlone",
+                "tintRestoredOriginal", "tintAlphaMask"
             ];
             result["success"] = !result.ContainsKey("rendererFailure") && Convert.ToInt64(result["invertFrames"]) > 0
                 && checks.All(check => (bool)result[check]);
@@ -174,10 +191,85 @@ public partial class App : Application
             if (brush != 0) EffectNative.DeleteObject(brush);
             foreach (var ownedBrush in Brushes.Values) EffectNative.DeleteObject(ownedBrush);
             Brushes.Clear();
-            File.WriteAllText(Environment.GetEnvironmentVariable("WINDOWPILOT_EFFECTS_RESULT") ?? Path.Combine(AppContext.BaseDirectory, "effects-probe.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(resultPath, JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
             Exit();
         }
     }
+
+    private async Task CheckTintAsync(EffectSession effects, Dictionary<string, object> result,
+        Func<string, string> calibrate, uint untintedGrayAtHalfOpacity)
+    {
+        var blue = Color.FromArgb(255, 32, 176, 224);
+        var black = Color.FromArgb(255, 0, 0, 0);
+        async Task Sample(string name, Color color, int strength, uint expected,
+            bool invertAndGray = false, int opacity = 100)
+        {
+            long frames = effects.RenderedFrames;
+            effects.Update(_target, invertAndGray, invertAndGray, opacity, false, false, color, strength);
+            // The input is stationary. A parameter edit must redraw the stored frame immediately.
+            bool repainted = effects.RenderedFrames > frames;
+            uint gpu = Dominant(effects.ReadRenderedPixelsForDiagnostics()!);
+            uint expectedScreen = expected | 0xFF000000;
+            uint desktop = 0;
+            for (int i = 0; i < 20; i++)
+            {
+                await Task.Delay(32);
+                desktop = 0xFF000000 | Convert.ToUInt32(calibrate(ScreenPixel(400, 320)), 16);
+                if (MatchesPixel(desktop, expectedScreen, 2)) break;
+            }
+            result[name + "Pixels"] = new { Expected = expected.ToString("X8"), GPU = gpu.ToString("X8"), Desktop = desktop.ToString("X8"), Repainted = repainted };
+            result[name] = repainted && MatchesPixel(gpu, expected, 1) && MatchesPixel(desktop, expectedScreen, 2);
+        }
+
+        await Sample("tintQuarter", blue, 25, 0xFFC72C38); // red * .75 + chosen RGB * .25
+        result["tintHitTarget"] = WindowFromPoint(new EffectNative.Point(400, 320)) == _target;
+        await Sample("tintFull", blue, 100, 0xFF20B0E0);
+        await Sample("tintColorOnlyChange", black, 100, 0xFF000000);
+        // Compare with the actual invert+grayscale baseline at the same opacity.
+        // Both terms are premultiplied before comparison with Win2D's BGRA output.
+        uint gray = untintedGrayAtHalfOpacity & 255;
+        uint Midpoint(uint tintedChannel) => (gray + tintedChannel + 1) / 2;
+        uint mixed = 0x80000000 | (Midpoint(16) << 16) | (Midpoint(88) << 8) | Midpoint(112);
+        await Sample("tintStacked", blue, 50, mixed, invertAndGray: true, opacity: 50);
+        await Sample("tintZeroWithEffects", blue, 0, untintedGrayAtHalfOpacity, invertAndGray: true, opacity: 50);
+        effects.Update(_target, false, false, 100, true, false, blue, 100);
+        result["tintHidden"] = !EffectNative.IsWindowVisible(effects.OverlayHandle);
+        effects.Update(_target, false, false, 100, false, false, blue, 100);
+        await Task.Delay(250);
+        result["tintReshown"] = calibrate(ScreenPixel(400, 320)) == "20B0E0";
+        effects.Update(_target, false, false, 100, false, false, blue, 0);
+        result["tintZeroAlone"] = !effects.IsRunning && effects.OverlayHandle == 0;
+        SetLayeredWindowAttributes(_target, 0, 255, 2);
+        await Task.Delay(250);
+        result["tintRestoredOriginal"] = calibrate(ScreenPixel(400, 320)) == "FF0000";
+
+        // A real window's shape varies with corner settings. This two-pixel source makes
+        // both a fully transparent pixel and a half-opaque red pixel deterministic.
+        using var device = new CanvasDevice();
+        byte[] sourcePixels = [0, 0, 0, 0, 0, 0, 128, 128];
+        using var source = CanvasBitmap.CreateFromBytes(device, sourcePixels, 2, 1,
+            DirectXPixelFormat.B8G8R8A8UIntNormalized, 96, CanvasAlphaMode.Premultiplied);
+        using var output = new CanvasRenderTarget(device, 2, 1, 96);
+        using var tint = EffectSession.CreateTintEffect(source, blue, 50);
+        using (var drawing = output.CreateDrawingSession())
+        {
+            drawing.Clear(Color.FromArgb(0, 0, 0, 0));
+            drawing.DrawImage(tint);
+        }
+        byte[] actual = output.GetPixelBytes();
+        uint translucent = BitConverter.ToUInt32(actual, 4);
+        result["tintAlphaPixel"] = translucent.ToString("X8");
+        result["tintAlphaMask"] = BitConverter.ToUInt32(actual, 0) == 0 && MatchesPixel(translucent, 0x80482C38, 1);
+    }
+
+    private static bool MatchesPixel(uint actual, uint expected, int tolerance)
+    {
+        if ((actual >> 24) != (expected >> 24)) return false;
+        for (int shift = 0; shift <= 16; shift += 8)
+            if (Math.Abs((int)((actual >> shift) & 255) - (int)((expected >> shift) & 255)) > tolerance) return false;
+        return true;
+    }
+
     private static string ScreenPixel(int x, int y)
     {
         nint dc = GetDC(0);
